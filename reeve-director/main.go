@@ -31,6 +31,10 @@ import (
 	"github.com/borgstrom/reeve/reeve-director/config"
 )
 
+var (
+	client *etcd.Client
+)
+
 func init() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 }
@@ -47,7 +51,7 @@ func main() {
 	log.WithFields(log.Fields{
 		"hosts": config.ETCD_HOSTS,
 	}).Print("Connecting to etcd")
-	client := etcd.NewClient(config.ETCD_HOSTS)
+	client = etcd.NewClient(config.ETCD_HOSTS)
 
 	// handle cleanup
 	cleanupChannel := make(chan os.Signal, 1)
@@ -55,27 +59,27 @@ func main() {
 	signal.Notify(cleanupChannel, syscall.SIGTERM)
 	go func() {
 		<-cleanupChannel
-		cleanup(client)
+		cleanup()
 		os.Exit(0)
 	}()
 
 	// find other directors
-	go discoverDirectors(client)
+	go discoverDirectors()
 
 	// register as a director
-	go directorHeartbeat(client)
+	go directorHeartbeat()
 
 	// sleep forever
 	for {
-		time.Sleep(1 * time.Second)
+		time.Sleep(60 * time.Second)
 	}
 }
 
-func cleanup(client *etcd.Client) {
+func cleanup() {
 	client.Delete(config.EtcDirectorPath(), false)
 }
 
-func directorHeartbeat(client *etcd.Client) {
+func directorHeartbeat() {
 	for {
 		if _, err := client.Set(config.EtcDirectorPath(), "", 30); err != nil {
 			log.Fatal(err)
@@ -84,7 +88,7 @@ func directorHeartbeat(client *etcd.Client) {
 	}
 }
 
-func discoverDirectors(client *etcd.Client) {
+func discoverDirectors() {
 	log.Print("Discovering other directors")
 
 	updates := make(chan *etcd.Response)

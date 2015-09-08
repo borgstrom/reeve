@@ -1,3 +1,5 @@
+// Reeve versioning
+//
 // Copyright 2015 Evan Borgstrom
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,35 +14,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package version
 
 import (
-	"flag"
 	"fmt"
-	"os"
+	"strings"
 )
-
-type StringMap []string
-
-func (i *StringMap) String() string {
-	return fmt.Sprint(*i)
-}
-
-func (i *StringMap) Set(value string) error {
-	*i = append(*i, value)
-	return nil
-}
 
 var (
-	etcd_machines StringMap = []string{"http://127.0.0.1:2379"}
-	id            string
+	SupportedVersion = "0.1"
+
+	Version = "0.1.1"
+
+	// should be set during built with -X github.com/borgstrom/reeve/version.GitSHA=XXXXXXX
+	GitSHA = "git"
 )
 
-func init() {
-	hostname, _ := os.Hostname()
-
-	flag.StringVar(&id, "id", hostname, fmt.Sprintf("ID of this node, defaults to %s", hostname))
-	flag.Var(&etcd_machines, "etcd", "URL(s) of etcd instances, defaults to 127.0.0.1:2379")
-
-	flag.Parse()
+// Only keep x.y from versions x.y.z-abc
+func ShortVersion(v string) string {
+	parts := strings.Split(v, ".")
+	if len(parts) < 3 {
+		return v
+	}
+	return fmt.Sprintf("%s.%s", parts[0], parts[1])
 }

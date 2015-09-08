@@ -20,19 +20,14 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
-	"strings"
 	"syscall"
-	"time"
 
 	log "github.com/Sirupsen/logrus"
 
 	"github.com/coreos/go-etcd/etcd"
 
 	"github.com/borgstrom/reeve/reeve-director/config"
-)
-
-var (
-	client *etcd.Client
+	"github.com/borgstrom/reeve/reeve-director/director"
 )
 
 func init() {
@@ -51,86 +46,21 @@ func main() {
 	log.WithFields(log.Fields{
 		"hosts": config.ETCD_HOSTS,
 	}).Print("Connecting to etcd")
-	client = etcd.NewClient(config.ETCD_HOSTS)
 
-	// handle cleanup
-	cleanupChannel := make(chan os.Signal, 1)
-	signal.Notify(cleanupChannel, os.Interrupt)
-	signal.Notify(cleanupChannel, syscall.SIGTERM)
-	go func() {
-		<-cleanupChannel
-		cleanup()
-		os.Exit(0)
-	}()
+	d := &director.Director{
+		Client: etcd.NewClient(config.ETCD_HOSTS),
+	}
 
 	// find other directors
-	go discoverDirectors()
+	go d.DiscoverDirectors()
 
 	// register as a director
-	go directorHeartbeat()
+	go d.DirectorHeartbeat()
 
-	// sleep forever
-	for {
-		time.Sleep(60 * time.Second)
-	}
-}
-
-func cleanup() {
-	client.Delete(config.EtcDirectorPath(), false)
-}
-
-func directorHeartbeat() {
-	for {
-		if _, err := client.Set(config.EtcDirectorPath(), "", 30); err != nil {
-			log.Fatal(err)
-		}
-		time.Sleep(30 * time.Second)
-	}
-}
-
-func discoverDirectors() {
-	log.Print("Discovering other directors")
-
-	updates := make(chan *etcd.Response)
-
-	go func() {
-		if _, err := client.Watch(config.EtcDirectorsPath(), 0, true, updates, nil); err != nil {
-			log.Fatal(err)
-		}
-	}()
-
-	for res := range updates {
-		log.WithFields(log.Fields{
-			"action": res.Action,
-			"key":    res.Node.Key,
-			"value":  res.Node.Value,
-		}).Debug("New event")
-
-		parts := strings.Split(res.Node.Key, "/")
-		node := parts[2]
-
-		if node == config.ID {
-			// ignore events about ourself
-			continue
-		}
-
-		if res.Action == "set" {
-			// check if we know about this director
-			log.WithFields(log.Fields{
-				"peer": node,
-			}).Info("Peer registration")
-		}
-
-		if res.Action == "delete" {
-			log.WithFields(log.Fields{
-				"peer": node,
-			}).Info("Peer deletion")
-		}
-
-		if res.Action == "expire" {
-			log.WithFields(log.Fields{
-				"peer": node,
-			}).Info("Peer expiration")
-		}
-	}
+	// block until we're interrupted
+	cleanupChannel := make(chan os.Signal, 1)
+	signal.Notify(cleanupChannel, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL, syscall.SIGHUP)
+	<-cleanupChannel
+	d.Client.Delete(config.EtcDirectorPath(), false)
+	os.Exit(0)
 }

@@ -1,4 +1,4 @@
-// Reeve director config
+// Reeve server config
 //
 // Copyright 2015 Evan Borgstrom
 //
@@ -20,16 +20,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 
 	log "github.com/Sirupsen/logrus"
 
 	"github.com/borgstrom/reeve/version"
-)
-
-const (
-	etcDirectorPrefix   = "/directors"
-	etcIdentitiesPrefix = "/identities"
 )
 
 // StringMap
@@ -45,11 +39,9 @@ func (i *StringMap) Set(value string) error {
 }
 
 var (
-	DEBUG      bool
-	ETCD_HOSTS StringMap = []string{"http://127.0.0.1:2379"}
-	ID         string
-	PORT       int
-	HOST       string
+	DEBUG     bool
+	DIRECTORS StringMap
+	ID        string
 )
 
 func init() {
@@ -59,10 +51,8 @@ func init() {
 	}
 
 	flag.BoolVar(&DEBUG, "debug", false, "Produce copius output")
-	flag.Var(&ETCD_HOSTS, "etcd", "Address(es) of etcd instances, can be specified multiple times")
+	flag.Var(&DIRECTORS, "director", "Address(es) of director instances, can be specified multiple times")
 	flag.StringVar(&ID, "id", hostname, "ID of this node")
-	flag.StringVar(&HOST, "host", "", "The address to bind to")
-	flag.IntVar(&PORT, "port", 4195, "The port to listen on")
 
 	var showVersion = flag.Bool("version", false, "Show the current version")
 
@@ -76,20 +66,4 @@ func init() {
 		fmt.Printf(version.Version)
 		os.Exit(0)
 	}
-}
-
-func EtcDirectorsPath() string {
-	return etcDirectorPrefix
-}
-
-func EtcDirectorPath(id string) string {
-	return strings.Join([]string{etcDirectorPrefix, id}, "/")
-}
-
-func EtcIdentitiesPath() string {
-	return etcIdentitiesPrefix
-}
-
-func EtcIdentityPath(id string) string {
-	return strings.Join([]string{etcIdentitiesPrefix, id}, "/")
 }

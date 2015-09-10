@@ -22,7 +22,7 @@ import (
 	log "github.com/Sirupsen/logrus"
 
 	"github.com/borgstrom/reeve/reeve-director/config"
-	"github.com/borgstrom/reeve/reeve-director/director"
+	"github.com/borgstrom/reeve/version"
 )
 
 func init() {
@@ -31,8 +31,9 @@ func init() {
 
 func main() {
 	log.WithFields(log.Fields{
-		"id": config.ID,
+		"id":      config.ID,
+		"version": version.Version,
 	}).Print("reeve-director starting")
 
-	director.NewDirector().Run()
+	NewDirector().Run()
 }

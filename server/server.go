@@ -17,11 +17,16 @@
 package server
 
 import (
-	"bufio"
 	"fmt"
 	"net"
 
 	log "github.com/Sirupsen/logrus"
+
+	"github.com/borgstrom/reeve/version"
+)
+
+const (
+	protocolIdentifer = "rēv"
 )
 
 type Client struct {
@@ -35,21 +40,6 @@ func NewClient(conn net.Conn, server *Server) *Client {
 	c.conn = conn
 	c.server = server
 	return c
-}
-
-func (c *Client) listen() {
-	reader := bufio.NewReader(c.conn)
-	for {
-		// TODO: make this non line based
-		_, err := reader.ReadString('\n')
-		if err != nil {
-			c.conn.Close()
-			// TODO: handle connection closed
-			return
-		}
-
-		// TODO: handle message
-	}
 }
 
 func (c *Client) Send(message string) error {
@@ -76,8 +66,6 @@ func (s *Server) Listen() {
 		"address": s.address,
 	}).Print("Listening")
 
-	go s.handleIncoming()
-
 	listener, err := net.Listen("tcp", s.address)
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -89,25 +77,15 @@ func (s *Server) Listen() {
 
 	for {
 		conn, _ := listener.Accept()
-		s.incoming <- conn
+
+		//client := NewClient(conn, s)
+
+		// Protocol exchange
+		conn.Write([]byte(protocolIdentifer))
+		conn.Write([]byte(version.SupportedVersion))
+
+		// Key exchange
+
+		conn.Close()
 	}
-}
-
-func (s *Server) handleIncoming() {
-	for {
-		select {
-		case conn := <-s.incoming:
-			s.newClient(conn)
-		}
-	}
-}
-
-func (s *Server) newClient(conn net.Conn) {
-	client := NewClient(conn, s)
-
-	// Protocol exchange
-
-	// Key exchange
-
-	go client.listen()
 }

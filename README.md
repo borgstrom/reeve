@@ -10,16 +10,19 @@ authentication and authorization using a system of identities and x509 certifica
 Theory / Notes
 --------------
 
+```
               [etcd]
                 |
-[client] -> [director] <--> [server1]
-                        `-> [serverN]
+[client] -> [director] <--> [agent1]
+                        `-> [agentN]
+
+```
 
 reeve-director maintains connections to the servers, runs on at least 1 node
 
 etcd maintains state, runs on all the director nodes (only accessible by directors)
 
-reeve-server is the server, runs on all nodes
+reeve-agent is what executes code on behalf of the directors, runs on all nodes
 
 reeve is the client, used to interact with the servers, via the director
 
@@ -33,15 +36,16 @@ directors.  Directors watch the etcd key for registrations and expirations, when
 occurs it will ensure it's connected to the other director and when an expiration occurs it will
 cause the director to release the connection.
 
-Reeve server will connect to a random director upon start up.  The connection creates a record in
-the state, binding that server to that director.  When the connection is closed the binding is
+Reeve agent will connect to a random director upon start up.  The connection creates a record in
+the state, binding that agent to that director.  When the connection is closed the binding is
 removed.  When a request comes to a director, it will first lookup if there's a binding for the
-server(s) being targeted, if any servers are being handled by another director it will let that
-director handle the communication with those servers.
+agent(s) being targeted, if any agents are being handled by another director it will let that
+director handle the communication with those agents.
 
 The director to handle a request creates it in the state, but any director can update the request as
-the servers they are bound to complete their parts in the request.
+the agents they are bound to complete their parts in the request.
 
+The agents starts up and will generate its keypair, if it doesn't exist.  
 
 Security
 --------

@@ -23,6 +23,8 @@ reeve-server is the server, runs on all nodes
 
 reeve is the client, used to interact with the servers, via the director
 
+Reeve director listens on one port: 4195
+
 
 Reeve director nodes have persistent connections between each other to create a full mesh.  This
 allows them to redirect and broadcast messages to each other.  When a director starts up it

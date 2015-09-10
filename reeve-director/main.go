@@ -17,14 +17,9 @@
 package main
 
 import (
-	"os"
-	"os/signal"
 	"runtime"
-	"syscall"
 
 	log "github.com/Sirupsen/logrus"
-
-	"github.com/coreos/go-etcd/etcd"
 
 	"github.com/borgstrom/reeve/reeve-director/config"
 	"github.com/borgstrom/reeve/reeve-director/director"
@@ -35,32 +30,9 @@ func init() {
 }
 
 func main() {
-	if config.DEBUG == true {
-		log.SetLevel(log.DebugLevel)
-	}
-
 	log.WithFields(log.Fields{
 		"id": config.ID,
 	}).Print("reeve-director starting")
 
-	log.WithFields(log.Fields{
-		"hosts": config.ETCD_HOSTS,
-	}).Print("Connecting to etcd")
-
-	d := &director.Director{
-		Client: etcd.NewClient(config.ETCD_HOSTS),
-	}
-
-	// find other directors
-	go d.DiscoverDirectors()
-
-	// register as a director
-	go d.DirectorHeartbeat()
-
-	// block until we're interrupted
-	cleanupChannel := make(chan os.Signal, 1)
-	signal.Notify(cleanupChannel, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL, syscall.SIGHUP)
-	<-cleanupChannel
-	d.Client.Delete(config.EtcDirectorPath(), false)
-	os.Exit(0)
+	director.NewDirector().Run()
 }

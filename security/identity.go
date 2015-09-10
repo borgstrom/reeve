@@ -1,4 +1,4 @@
-// Reeve versioning
+// Reeve security implementation
 //
 // Copyright 2015 Evan Borgstrom
 //
@@ -14,27 +14,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package version
+package security
 
-import (
-	"fmt"
-	"strings"
-)
-
-var (
-	SupportedVersion = "0.1"
-
-	Version = "0.1.1"
-
-	// should be set during built with -X github.com/borgstrom/reeve/version.GitSHA=XXXXXXX
-	GitSHA = "git-sha-not-set"
-)
-
-// Only keep x.y from versions x.y.z-abc
-func ShortVersion(v string) string {
-	parts := strings.Split(v, ".")
-	if len(parts) < 3 {
-		return v
-	}
-	return fmt.Sprintf("%s.%s", parts[0], parts[1])
+type Identity struct {
+	Id   string
+	Keys *KeyPair
 }

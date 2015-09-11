@@ -33,6 +33,7 @@ func main() {
 	log.WithFields(log.Fields{
 		"id":      config.ID,
 		"version": version.Version,
+		"git":     version.GitSHA,
 	}).Print("reeve-director starting")
 
 	NewDirector().Run()

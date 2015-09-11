@@ -22,9 +22,17 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	log "github.com/Sirupsen/logrus"
+
+	"github.com/borgstrom/reeve/protocol"
+	"github.com/borgstrom/reeve/reeve-agent/config"
+	"github.com/borgstrom/reeve/security"
 )
 
 type Agent struct {
+	identity *security.Identity
+	client   *protocol.Client
 }
 
 func NewAgent() *Agent {
@@ -33,8 +41,26 @@ func NewAgent() *Agent {
 }
 
 func (a Agent) Run() {
+	log.WithFields(log.Fields{
+		"director": config.DIRECTOR,
+	}).Info("Connecting to director")
+
+	a.client = protocol.NewClient(config.DIRECTOR)
+	if err := a.client.Connect(); err != nil {
+		log.WithFields(log.Fields{
+			"error":    err,
+			"director": config.DIRECTOR,
+		}).Fatal("Failed to connect to the director")
+	}
+	log.WithFields(log.Fields{
+		"director": config.DIRECTOR,
+	}).Info("Connected to director")
+
 	// block until interrupted
 	cleanupChannel := make(chan os.Signal, 1)
 	signal.Notify(cleanupChannel, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)
 	<-cleanupChannel
+}
+
+func (a Agent) loadIdentity() {
 }

@@ -17,17 +17,18 @@
 package version
 
 import (
-	"fmt"
 	"strings"
 )
 
-var (
-	SupportedVersion = "0.1"
-
+const (
 	Version = "0.1.1"
+)
+
+var (
+	ProtocolVersion = ShortVersion(Version)
 
 	// should be set during built with -X github.com/borgstrom/reeve/version.GitSHA=XXXXXXX
-	GitSHA = "git-sha-not-set"
+	GitSHA = "master"
 )
 
 // Only keep x.y from versions x.y.z-abc
@@ -36,5 +37,5 @@ func ShortVersion(v string) string {
 	if len(parts) < 3 {
 		return v
 	}
-	return fmt.Sprintf("%s.%s", parts[0], parts[1])
+	return strings.Join(parts[0:1], ".")
 }

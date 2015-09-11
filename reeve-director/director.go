@@ -30,9 +30,9 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 
+	"github.com/borgstrom/reeve/protocol"
 	"github.com/borgstrom/reeve/reeve-director/config"
 	"github.com/borgstrom/reeve/security"
-	"github.com/borgstrom/reeve/server"
 )
 
 const (
@@ -41,7 +41,7 @@ const (
 
 type Director struct {
 	etc      *etcd.Client
-	server   *server.Server
+	server   *protocol.Server
 	identity *security.Identity
 }
 
@@ -184,7 +184,7 @@ func (d Director) Run() {
 	go d.DirectorHeartbeat()
 
 	// Setup the server
-	d.server = server.NewServer(config.HOST, config.PORT)
+	d.server = protocol.NewServer(config.HOST, config.PORT)
 	go d.server.Listen()
 
 	// block until interrupted

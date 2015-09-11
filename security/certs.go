@@ -113,6 +113,12 @@ func NewKeyPair(id string, parent *x509.Certificate) *KeyPair {
 	return k
 }
 
+func NewRequestKeyPair(id string) *KeyPair {
+	k := new(KeyPair)
+
+	return k
+}
+
 func makeCertificate(priv *ecdsa.PrivateKey, template *x509.Certificate, parent *x509.Certificate) *x509.Certificate {
 	derBytes, err := x509.CreateCertificate(rand.Reader, template, parent, &priv.PublicKey, priv)
 	if err != nil {

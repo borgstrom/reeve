@@ -42,7 +42,7 @@ func NewServer(host string, port int) *Server {
 	return s
 }
 
-func (s Server) Listen() {
+func (s *Server) Listen() {
 	log.WithFields(log.Fields{
 		"address": s.address,
 	}).Print("Listening")
@@ -62,7 +62,7 @@ func (s Server) Listen() {
 	}
 }
 
-func (s Server) handleConn(conn net.Conn) {
+func (s *Server) handleConn(conn net.Conn) {
 	log.WithFields(log.Fields{
 		"addr": conn.RemoteAddr(),
 	}).Debug("New connection")

@@ -19,8 +19,10 @@ limitations under the License.
 package main
 
 import (
+	"io/ioutil"
 	"os"
 	"os/signal"
+	"path"
 	"syscall"
 
 	log "github.com/Sirupsen/logrus"
@@ -28,6 +30,12 @@ import (
 	"github.com/borgstrom/reeve/protocol"
 	"github.com/borgstrom/reeve/reeve-agent/config"
 	"github.com/borgstrom/reeve/security"
+)
+
+const (
+	keyName = "reeve-agent.key"
+	csrName = "reeve-agent.csr"
+	crtName = "reeve-agent.crt"
 )
 
 type Agent struct {
@@ -40,7 +48,11 @@ func NewAgent() *Agent {
 	return a
 }
 
-func (a Agent) Run() {
+func (a *Agent) Run() {
+	// Get our Identity ready
+	a.loadIdentity()
+
+	// Connect to the director
 	log.WithFields(log.Fields{
 		"director": config.DIRECTOR,
 	}).Info("Connecting to director")
@@ -62,5 +74,85 @@ func (a Agent) Run() {
 	<-cleanupChannel
 }
 
-func (a Agent) loadIdentity() {
+// loadIdentity loads or creates our identity
+func (a *Agent) loadIdentity() {
+	var (
+		err       error
+		fileBytes []byte
+	)
+
+	a.identity = security.NewIdentity(config.ID)
+
+	keyFile := path.Join(config.KEYDIR, keyName)
+	_, err = os.Stat(keyFile)
+	if err == nil {
+		// The key exists, load it
+		fileBytes, err = ioutil.ReadFile(keyFile)
+		if err = a.identity.LoadKey(fileBytes); err != nil {
+			log.WithFields(log.Fields{
+				"error": err,
+			}).Fatal("Failed to load private key")
+		}
+	} else {
+		// Create a new one
+		if err = a.identity.NewKey(); err != nil {
+			log.WithError(err).Fatal("Failed to generate a new key")
+		}
+
+		// And save it
+		f, err := os.Create(keyFile)
+		if err != nil {
+			log.WithError(err).WithFields(log.Fields{"key": keyFile}).Fatal("Failed to open key for writing")
+		}
+
+		// Set an appropriate mode
+		f.Chmod(0400)
+
+		// Write it
+		a.identity.Key.WritePEM(f)
+	}
+
+	crtFile := path.Join(config.KEYDIR, crtName)
+	_, err = os.Stat(crtFile)
+	if err == nil {
+		// The certificate exists, load it
+		fileBytes, err = ioutil.ReadFile(crtFile)
+		if err = a.identity.LoadCertificate(fileBytes); err != nil {
+			log.WithError(err).Fatal("Failed to load certificate")
+		}
+
+		// At this point we are done, get out of here
+		return
+	}
+
+	// See if we have an existing csr
+	csrFile := path.Join(config.KEYDIR, csrName)
+	_, err = os.Stat(csrFile)
+	if err == nil {
+		// The request exists, load it
+		fileBytes, err = ioutil.ReadFile(csrFile)
+		if err = a.identity.LoadRequest(fileBytes); err != nil {
+			log.WithError(err).Fatal("Failed to load signing request")
+		}
+	} else {
+		// Create a new request
+		if err = a.identity.NewRequest(); err != nil {
+			log.WithError(err).Fatal("Failed to create the new signing request")
+		}
+
+		// And save it
+		f, err := os.Create(csrFile)
+		if err != nil {
+			log.WithFields(log.Fields{
+				"error": err,
+				"key":   csrFile,
+			}).Fatal("Failed to open csr for writing")
+		}
+
+		// Set an appropriate mode
+		f.Chmod(0400)
+
+		// Write it
+		a.identity.Request.WritePEM(f)
+	}
 }

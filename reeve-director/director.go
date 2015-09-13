@@ -36,8 +36,15 @@ import (
 )
 
 const (
-	heartbeatInterval = 10
+	heartbeatInterval   = 10
+	caIdentity          = "_CA"
+	etcDirectorPrefix   = "/directors"
+	etcIdentitiesPrefix = "/identities"
 )
+
+func etcPath(parts ...string) string {
+	return strings.Join(parts, "/")
+}
 
 type Director struct {
 	etc      *etcd.Client
@@ -51,131 +58,114 @@ func NewDirector() *Director {
 	return d
 }
 
-func (d Director) CreateIdentity(id string) *security.Identity {
-	var caKeys *security.KeyPair
-
-	i := new(security.Identity)
-
-	// load the CA keys
-	caKeys = d.LoadKeyPair("/ca")
-	if caKeys == nil {
-		// Create the CA keys
-		// XXX for some reason if we do: caKeys = security.NewCAKeyPair()
-		// XXX then accessing caKeys.Cert throws a runtime panic when we call:
-		// XXX i.Keys = security.NewKeyPair(...)
-		// XXX storing, then re-loading works fine though and since this is a rare
-		// XXX occurance I'm leaving this as-is for now.
-		d.StoreKeyPair("/ca", security.NewCAKeyPair())
-		caKeys = d.LoadKeyPair("/ca")
-	}
-
-	i.Id = id
-	i.Keys = security.NewKeyPair(id, caKeys.Cert)
-
-	d.StoreKeyPair(config.EtcIdentityPath(id), i.Keys)
-
-	return i
-}
-
-func (d Director) LoadIdentity(id string) *security.Identity {
-	i := new(security.Identity)
-
-	_, err := d.etc.Get(config.EtcIdentityPath(id), false, false)
-	if err != nil {
-		// XXX TODO WTF? there has to be a better way to do this
-		if err.Error()[0:3] != "100" {
-			log.WithFields(log.Fields{
-				"error": err,
-				"path":  config.EtcIdentityPath(id),
-			}).Fatal("Couldn't load identity from etcd")
-		}
-
-		// identity doesn't exist
-		return nil
-	}
-
-	i.Id = id
-	i.Keys = d.LoadKeyPair(config.EtcIdentityPath(id))
-
-	return i
-}
-
-func (d Director) LoadKeyPair(pathPrefix string) *security.KeyPair {
-	keyPath := strings.Join([]string{pathPrefix, "key"}, "/")
-	certPath := strings.Join([]string{pathPrefix, "cert"}, "/")
-
-	encodedKey, err := d.etc.Get(keyPath, false, false)
-	if err != nil {
-		if err.Error()[0:3] != "100" {
-			log.WithFields(log.Fields{
-				"error": err,
-				"path":  keyPath,
-			}).Fatal("Couldn't load key from etcd")
-		}
-
-		return nil
-	}
-
-	encodedCert, err := d.etc.Get(certPath, false, false)
-	if err != nil {
-		if err.Error()[0:3] != "100" {
-			log.WithFields(log.Fields{
-				"error": err,
-				"path":  certPath,
-			}).Fatal("Couldn't load cert from etcd")
-		}
-
-		return nil
-	}
-
-	return security.LoadKeyPairFromPEM(
-		[]byte(encodedKey.Node.Value),
-		[]byte(encodedCert.Node.Value),
-	)
-}
-
-func (d Director) StoreKeyPair(pathPrefix string, keyPair *security.KeyPair) {
+func (d *Director) LoadIdentity(id string) (*security.Identity, error) {
 	var (
-		keyBuf  bytes.Buffer
-		certBuf bytes.Buffer
-		err     error
+		pemBytes []byte
+		err      error
 	)
 
-	keyPath := strings.Join([]string{pathPrefix, "key"}, "/")
-	certPath := strings.Join([]string{pathPrefix, "cert"}, "/")
+	etcGet := func(name string) ([]byte, error) {
+		resp, err := d.etc.Get(etcPath(etcIdentitiesPrefix, id, name), false, false)
+		if err != nil {
+			return nil, err
+		}
 
-	keyPair.WriteKey(&keyBuf)
-	keyPair.WriteCert(&certBuf)
-
-	_, err = d.etc.Set(keyPath, keyBuf.String(), 0)
-	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err,
-			"path":  keyPath,
-		}).Fatal("Failed to store encoded key")
+		return []byte(resp.Node.Value), nil
 	}
 
-	_, err = d.etc.Set(certPath, certBuf.String(), 0)
+	i := security.NewIdentity(id)
+
+	pemBytes, err = etcGet("key")
 	if err != nil {
-		log.WithFields(log.Fields{
-			"error": err,
-			"path":  keyPath,
-		}).Fatal("Failed to store encoded certificate")
+		if err.Error()[0:3] != "100" {
+			return nil, err
+		}
+
+		// No key, the identity can't be valid
+		return nil, nil
+	}
+	i.Key, err = security.KeyFromPEM(pemBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	pemBytes, err = etcGet("crt")
+	if err != nil {
+		if err.Error()[0:3] != "100" {
+			return nil, err
+		}
+
+		// if there's no certificate see if there's a signing request
+		pemBytes, err = etcGet("csr")
+		if err != nil {
+			if err.Error()[0:3] != "100" {
+				return nil, err
+			}
+		} else {
+			i.Request, err = security.RequestFromPEM(pemBytes)
+			if err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		i.Certificate, err = security.CertificateFromPEM(pemBytes)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Now check the validitiy of the identity
+	if !i.IsValid() {
+		return nil, nil
+	}
+
+	return i, nil
+}
+
+func (d *Director) StoreIdentity(identity *security.Identity) {
+	// etcSet is a closure to handle the repetative task of serializing and setting in etcd
+	etcSet := func(name string, pem security.PEMWriter) {
+		var (
+			pemBuf bytes.Buffer
+			err    error
+		)
+		if err = pem.WritePEM(&pemBuf); err != nil {
+			log.WithError(err).Fatal("Failed to write the identity's key to our buffer")
+		}
+		_, err = d.etc.Set(etcPath(etcIdentitiesPrefix, identity.Id, name), pemBuf.String(), 0)
+		if err != nil {
+			log.WithError(err).Fatal("Failed to store the identity's encoded key in etcd")
+		}
+	}
+
+	etcSet("key", identity.Key)
+
+	if identity.Certificate != nil {
+		etcSet("crt", identity.Certificate)
+	}
+
+	if identity.Request != nil {
+		etcSet("csr", identity.Request)
 	}
 }
 
-func (d Director) Run() {
+func (d *Director) Run() {
+	var err error
+
 	// Connect to etcd
 	log.WithFields(log.Fields{
 		"hosts": config.ETCD_HOSTS,
-	}).Print("Connecting to etcd")
+	}).Info("Connecting to etcd")
 	d.etc = etcd.NewClient(config.ETCD_HOSTS)
 
 	// load our identity
-	d.identity = d.LoadIdentity(config.ID)
-	if d.identity == nil {
-		d.identity = d.CreateIdentity(config.ID)
+	d.identity, err = d.LoadIdentity(config.ID)
+	if err != nil {
+		log.WithError(err).Fatal("Failed to load our own identity!")
 	}
+	/*if d.identity == nil {
+		d.identity = d.CreateIdentity(config.ID)
+	}*/
 
 	// find other directors
 	go d.DiscoverDirectors()
@@ -191,12 +181,12 @@ func (d Director) Run() {
 	cleanupChannel := make(chan os.Signal, 1)
 	signal.Notify(cleanupChannel, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)
 	<-cleanupChannel
-	d.etc.Delete(config.EtcDirectorPath(config.ID), false)
+	d.etc.Delete(etcPath(etcDirectorPrefix, config.ID), false)
 }
 
-func (d Director) DirectorHeartbeat() {
+func (d *Director) DirectorHeartbeat() {
 	for {
-		if _, err := d.etc.Set(config.EtcDirectorPath(config.ID), "", heartbeatInterval); err != nil {
+		if _, err := d.etc.Set(etcPath(etcDirectorPrefix, config.ID), time.Now().String(), heartbeatInterval); err != nil {
 			log.Fatal(err)
 		}
 		// sleep for 9.9999999 seconds
@@ -204,13 +194,13 @@ func (d Director) DirectorHeartbeat() {
 	}
 }
 
-func (d Director) DiscoverDirectors() {
+func (d *Director) DiscoverDirectors() {
 	log.Print("Discovering other directors")
 
 	updates := make(chan *etcd.Response)
 
 	go func() {
-		if _, err := d.etc.Watch(config.EtcDirectorsPath(), 0, true, updates, nil); err != nil {
+		if _, err := d.etc.Watch(etcDirectorPrefix, 0, true, updates, nil); err != nil {
 			log.Fatal(err)
 		}
 	}()

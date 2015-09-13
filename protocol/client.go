@@ -38,7 +38,7 @@ func NewClient(director string) *Client {
 }
 
 // Connect sets up the connection to the director
-func (c Client) Connect() error {
+func (c *Client) Connect() error {
 	conn, err := net.Dial("tcp", c.director)
 	if err != nil {
 		return err

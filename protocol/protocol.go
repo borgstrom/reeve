@@ -37,8 +37,8 @@ import (
 )
 
 const (
-	protocolIdentifer = "reeve"
-	protocolAck       = "OK"
+	protocolId  = "rēv"
+	protocolAck = "OK"
 )
 
 // RawProtocolConn represents our raw unencrypted protocol implementation
@@ -49,6 +49,7 @@ type RawProtocol struct {
 	reader *bufio.Reader
 }
 
+// NewRawProtocol creates a new RawProtocol instance based on a net.Conn
 func NewRawProtocol(conn net.Conn) *RawProtocol {
 	p := new(RawProtocol)
 	p.conn = conn
@@ -57,7 +58,7 @@ func NewRawProtocol(conn net.Conn) *RawProtocol {
 }
 
 // WriteString writes the string value in s followed by a null byte
-func (p RawProtocol) WriteString(s string) error {
+func (p *RawProtocol) WriteString(s string) error {
 	_, err := p.conn.Write([]byte(s + "\x00"))
 	if err != nil {
 		return err
@@ -66,7 +67,7 @@ func (p RawProtocol) WriteString(s string) error {
 }
 
 // ReadString reads a string up to a null byte
-func (p RawProtocol) ReadString() (string, error) {
+func (p *RawProtocol) ReadString() (string, error) {
 	bytes, err := p.reader.ReadBytes("\x00"[0])
 	if err != nil {
 		return "", err
@@ -75,14 +76,14 @@ func (p RawProtocol) ReadString() (string, error) {
 	return string(bytes[0 : len(bytes)-1]), nil
 }
 
-// AnnounceProtocol sends our protocol identifiers
-func (p RawProtocol) Announce() error {
+// Announce sends our protocol identifiers over the connection
+func (p *RawProtocol) Announce() error {
 	var err error
 	log.WithFields(log.Fields{
 		"addr": p.conn.RemoteAddr(),
 	}).Debug("Announcing protocol")
 
-	if err = p.WriteString(protocolIdentifer); err != nil {
+	if err = p.WriteString(protocolId); err != nil {
 		return errors.New("Failed to announce protocol")
 	}
 	if err = p.WriteString(version.ProtocolVersion); err != nil {
@@ -102,13 +103,13 @@ func (p RawProtocol) Announce() error {
 }
 
 // Validate reads from the connection and makes sure the protocol version being announced is valid
-func (p RawProtocol) Validate() error {
+func (p *RawProtocol) Validate() error {
 	log.WithFields(log.Fields{
 		"addr": p.conn.RemoteAddr(),
 	}).Debug("Verifying protocol")
 
 	protoId, err := p.ReadString()
-	if err != nil || protoId != protocolIdentifer {
+	if err != nil || protoId != protocolId {
 		return errors.New("Invalid protocol identifier")
 	}
 

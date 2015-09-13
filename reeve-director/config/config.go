@@ -20,16 +20,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 
 	log "github.com/Sirupsen/logrus"
 
 	"github.com/borgstrom/reeve/version"
-)
-
-const (
-	etcDirectorPrefix   = "/directors"
-	etcIdentitiesPrefix = "/identities"
 )
 
 // StringMap
@@ -76,20 +70,4 @@ func init() {
 		fmt.Printf(version.Version)
 		os.Exit(0)
 	}
-}
-
-func EtcDirectorsPath() string {
-	return etcDirectorPrefix
-}
-
-func EtcDirectorPath(id string) string {
-	return strings.Join([]string{etcDirectorPrefix, id}, "/")
-}
-
-func EtcIdentitiesPath() string {
-	return etcIdentitiesPrefix
-}
-
-func EtcIdentityPath(id string) string {
-	return strings.Join([]string{etcIdentitiesPrefix, id}, "/")
 }

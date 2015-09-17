@@ -26,7 +26,17 @@ import (
 )
 
 type ServerConnection struct {
-	conn net.Conn
+	Conn  net.Conn
+	Proto *RawProtocol
+}
+
+func NewServerConnection(conn net.Conn, proto *RawProtocol) *ServerConnection {
+	c := new(ServerConnection)
+
+	c.Conn = conn
+	c.Proto = proto
+
+	return c
 }
 
 type Server struct {
@@ -42,7 +52,7 @@ func NewServer(host string, port int) *Server {
 	return s
 }
 
-func (s *Server) Listen() {
+func (s *Server) Listen(connections chan *ServerConnection) {
 	log.WithFields(log.Fields{
 		"address": s.address,
 	}).Print("Listening")
@@ -58,28 +68,10 @@ func (s *Server) Listen() {
 
 	for {
 		conn, _ := listener.Accept()
-		go s.handleConn(conn)
-	}
-}
-
-func (s *Server) handleConn(conn net.Conn) {
-	log.WithFields(log.Fields{
-		"addr": conn.RemoteAddr(),
-	}).Debug("New connection")
-
-	defer conn.Close()
-
-	var err error
-
-	proto := NewRawProtocol(conn)
-	if err = proto.Validate(); err != nil {
 		log.WithFields(log.Fields{
-			"error": err,
-		}).Error("Protocol validation failed")
+			"address": conn.RemoteAddr().String(),
+		}).Debug("New connection")
 
-		return
+		connections <- NewServerConnection(conn, NewRawProtocol(conn))
 	}
-
-	// Key exchange
-	// Read a PEM encoded certificate from the client
 }

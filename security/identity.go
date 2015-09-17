@@ -47,12 +47,12 @@ func NewIdentity(id string) *Identity {
 
 // IsValid returns true if the Identity has a key and a cert or csr
 func (i *Identity) IsValid() bool {
-	return len(i.Id) > 0 && i.Key != nil && (i.Certificate != nil || i.Request != nil)
+	return len(i.Id) > 0 && (i.Certificate != nil || i.Request != nil)
 }
 
 // IsSigned returns true if the Identity has a certificate
 func (i *Identity) IsSigned() bool {
-	return len(i.Id) > 0 && i.Key != nil && i.Certificate != nil
+	return len(i.Id) > 0 && i.Certificate != nil
 }
 
 // Generates a new key for the identity

@@ -28,12 +28,12 @@ import (
 
 // Authority holds the CA key, certificate & serial number
 // New CAs can be created with the NewAuthority function, otherwise simply create an Authority
-// object and assign the attributes using CertificateFromPEM, KeyKeyFromPEM, and your own method
+// object and assign the attributes using CertificateFromPEM, KeyFromPEM, and your own method
 // of storing the serial number (i.e. in etcd)
 type Authority struct {
-	Key    *Key
-	Cert   *Certificate
-	Serial *big.Int
+	Key         *Key
+	Certificate *Certificate
+	Serial      *big.Int
 }
 
 // NewAuthority generates a new Authority that is used to sign other Certificates
@@ -75,7 +75,7 @@ func NewAuthority(key *Key) (*Authority, error) {
 		return nil, fmt.Errorf("Failed to create the certificate: %s", err.Error())
 	}
 
-	a.Cert = cert
+	a.Certificate = cert
 	a.Key = key
 	a.Serial = big.NewInt(2)
 

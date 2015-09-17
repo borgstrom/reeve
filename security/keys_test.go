@@ -24,7 +24,7 @@ import (
 )
 
 func TestEncoding(t *testing.T) {
-	key, err := NewPrivateKey()
+	key, err := NewKey()
 	if err != nil {
 		t.Fatal("Failed to generate a key")
 	}

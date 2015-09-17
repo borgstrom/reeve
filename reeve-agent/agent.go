@@ -24,6 +24,7 @@ import (
 	"os/signal"
 	"path"
 	"syscall"
+	"time"
 
 	log "github.com/Sirupsen/logrus"
 
@@ -45,28 +46,50 @@ type Agent struct {
 
 func NewAgent() *Agent {
 	a := new(Agent)
+
 	return a
 }
 
 func (a *Agent) Run() {
+	var err error
+
 	// Get our Identity ready
-	a.loadIdentity()
+	a.prepareIdentity()
 
-	// Connect to the director
-	log.WithFields(log.Fields{
-		"director": config.DIRECTOR,
-	}).Info("Connecting to director")
-
-	a.client = protocol.NewClient(config.DIRECTOR)
-	if err := a.client.Connect(); err != nil {
-		log.WithFields(log.Fields{
-			"error":    err,
-			"director": config.DIRECTOR,
-		}).Fatal("Failed to connect to the director")
+	if !a.identity.IsValid() {
+		log.Fatal("Our identity is not valid!\n" +
+			"You should purge the keys on this node and invalidate the identity on the directors.\n" +
+			"This should not ever happen unless you've manually altered the keys.\n" +
+			"If you can reproduce it, please file a bug at:\n" +
+			"https://github.com/borgstrom/reeve/issues")
 	}
-	log.WithFields(log.Fields{
-		"director": config.DIRECTOR,
-	}).Info("Connected to director")
+
+	// We need to get the director to sign our identity before we can do anything else
+	for !a.identity.IsSigned() {
+		// Connect to the director
+		log.WithFields(log.Fields{
+			"director": config.DIRECTOR,
+		}).Info("Connecting to director")
+
+		a.client = protocol.NewClient(config.DIRECTOR)
+		if err = a.client.Connect(); err != nil {
+			log.WithFields(log.Fields{
+				"error":    err,
+				"director": config.DIRECTOR,
+			}).Fatal("Failed to connect to the director")
+		}
+
+		if err = a.client.SendSigningRequest(a.identity); err != nil {
+			log.WithError(err).Fatal("Failed to send signing request to the director")
+		}
+
+		if !a.identity.IsSigned() {
+			log.Info("Waiting for our identity to be signed by the director...")
+			time.Sleep(15 * time.Second)
+		}
+	}
+
+	// Start TLS
 
 	// block until interrupted
 	cleanupChannel := make(chan os.Signal, 1)
@@ -74,14 +97,18 @@ func (a *Agent) Run() {
 	<-cleanupChannel
 }
 
-// loadIdentity loads or creates our identity
-func (a *Agent) loadIdentity() {
+// prepareIdentity loads or creates our identity
+func (a *Agent) prepareIdentity() {
 	var (
 		err       error
 		fileBytes []byte
 	)
 
 	a.identity = security.NewIdentity(config.ID)
+
+	log.WithFields(log.Fields{
+		"keydir": config.KEYDIR,
+	}).Debug("Loading identity keys")
 
 	keyFile := path.Join(config.KEYDIR, keyName)
 	_, err = os.Stat(keyFile)
@@ -105,11 +132,11 @@ func (a *Agent) loadIdentity() {
 			log.WithError(err).WithFields(log.Fields{"key": keyFile}).Fatal("Failed to open key for writing")
 		}
 
-		// Set an appropriate mode
-		f.Chmod(0400)
-
 		// Write it
 		a.identity.Key.WritePEM(f)
+
+		// Set an appropriate mode
+		f.Chmod(0400)
 	}
 
 	crtFile := path.Join(config.KEYDIR, crtName)
@@ -121,7 +148,7 @@ func (a *Agent) loadIdentity() {
 			log.WithError(err).Fatal("Failed to load certificate")
 		}
 
-		// At this point we are done, get out of here
+		// At this point we are done and the identity is ready to use
 		return
 	}
 

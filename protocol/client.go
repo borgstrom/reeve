@@ -20,6 +20,8 @@ package protocol
 
 import (
 	"net"
+
+	"github.com/borgstrom/reeve/security"
 )
 
 type Client struct {
@@ -52,11 +54,14 @@ func (c *Client) Connect() error {
 		return err
 	}
 
-	// If our certificate is not signed by the CA yet then we need to get a signed copy of the cert
-	// before we upgrade the connection to TLS
+	return nil
+}
 
-	// Send the PEM version of our unsigned certificate
-	//
+func (c *Client) SendSigningRequest(identity *security.Identity) error {
+	var err error
 
+	if err = c.proto.SendSigningRequest(identity.Request); err != nil {
+		return err
+	}
 	return nil
 }

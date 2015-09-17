@@ -19,37 +19,28 @@ limitations under the License.
 package main
 
 import (
-	"bytes"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
-	"time"
-
-	"github.com/coreos/go-etcd/etcd"
 
 	log "github.com/Sirupsen/logrus"
 
 	"github.com/borgstrom/reeve/protocol"
-	"github.com/borgstrom/reeve/reeve-director/config"
 	"github.com/borgstrom/reeve/security"
+	"github.com/borgstrom/reeve/state"
+
+	"github.com/borgstrom/reeve/reeve-director/config"
 )
 
 const (
-	heartbeatInterval   = 10
-	caIdentity          = "_CA"
-	etcDirectorPrefix   = "/directors"
-	etcIdentitiesPrefix = "/identities"
+	heartbeatInterval = 10
 )
 
-func etcPath(parts ...string) string {
-	return strings.Join(parts, "/")
-}
-
 type Director struct {
-	etc      *etcd.Client
-	server   *protocol.Server
-	identity *security.Identity
+	state     *state.State
+	server    *protocol.Server
+	identity  *security.Identity
+	authority *security.Authority
 }
 
 func NewDirector() *Director {
@@ -58,179 +49,172 @@ func NewDirector() *Director {
 	return d
 }
 
-func (d *Director) LoadIdentity(id string) (*security.Identity, error) {
-	var (
-		pemBytes []byte
-		err      error
-	)
+func (d *Director) createCA() {
+	var err error
 
-	etcGet := func(name string) ([]byte, error) {
-		resp, err := d.etc.Get(etcPath(etcIdentitiesPrefix, id, name), false, false)
-		if err != nil {
-			return nil, err
-		}
+	log.Info("Creating a new Certificate Authority")
 
-		return []byte(resp.Node.Value), nil
-	}
-
-	i := security.NewIdentity(id)
-
-	pemBytes, err = etcGet("key")
+	log.Debug("Generating key")
+	key, err := security.NewKey()
 	if err != nil {
-		if err.Error()[0:3] != "100" {
-			return nil, err
-		}
-
-		// No key, the identity can't be valid
-		return nil, nil
+		log.WithError(err).Fatal("Failed to generate CA key")
 	}
-	i.Key, err = security.KeyFromPEM(pemBytes)
+
+	log.Debug("Generating certificate")
+	d.authority, err = security.NewAuthority(key)
 	if err != nil {
-		return nil, err
+		log.WithError(err).Fatal("Failed to generate CA certificate")
 	}
 
-	pemBytes, err = etcGet("crt")
-	if err != nil {
-		if err.Error()[0:3] != "100" {
-			return nil, err
-		}
-
-		// if there's no certificate see if there's a signing request
-		pemBytes, err = etcGet("csr")
-		if err != nil {
-			if err.Error()[0:3] != "100" {
-				return nil, err
-			}
-		} else {
-			i.Request, err = security.RequestFromPEM(pemBytes)
-			if err != nil {
-				return nil, err
-			}
-		}
-	} else {
-		i.Certificate, err = security.CertificateFromPEM(pemBytes)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Now check the validitiy of the identity
-	if !i.IsValid() {
-		return nil, nil
-	}
-
-	return i, nil
+	d.state.StoreAuthority(d.authority)
 }
 
-func (d *Director) StoreIdentity(identity *security.Identity) {
-	// etcSet is a closure to handle the repetative task of serializing and setting in etcd
-	etcSet := func(name string, pem security.PEMWriter) {
-		var (
-			pemBuf bytes.Buffer
-			err    error
-		)
-		if err = pem.WritePEM(&pemBuf); err != nil {
-			log.WithError(err).Fatal("Failed to write the identity's key to our buffer")
-		}
-		_, err = d.etc.Set(etcPath(etcIdentitiesPrefix, identity.Id, name), pemBuf.String(), 0)
-		if err != nil {
-			log.WithError(err).Fatal("Failed to store the identity's encoded key in etcd")
-		}
-	}
+func (d *Director) createIdentity(name string) (*security.Identity, error) {
+	i := security.NewIdentity(name)
 
-	etcSet("key", identity.Key)
+	i.NewKey()
 
-	if identity.Certificate != nil {
-		etcSet("crt", identity.Certificate)
-	}
-
-	if identity.Request != nil {
-		etcSet("csr", identity.Request)
-	}
+	return i, nil
 }
 
 func (d *Director) Run() {
 	var err error
 
-	// Connect to etcd
-	log.WithFields(log.Fields{
-		"hosts": config.ETCD_HOSTS,
-	}).Info("Connecting to etcd")
-	d.etc = etcd.NewClient(config.ETCD_HOSTS)
+	// Create our state
+	d.state = state.NewState(config.ETCD_HOSTS)
+
+	// get our authority
+	d.authority, err = d.state.LoadAuthority()
+	if err != nil {
+		log.WithError(err).Fatal("Failed to load CA identity!")
+	}
+	if d.authority == nil {
+		// The CA needs to be setup
+		d.createCA()
+	}
 
 	// load our identity
-	d.identity, err = d.LoadIdentity(config.ID)
+	d.identity, err = d.state.LoadIdentity(config.ID)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to load our own identity!")
 	}
-	/*if d.identity == nil {
-		d.identity = d.CreateIdentity(config.ID)
-	}*/
+	if d.identity == nil {
+		d.identity, err = d.createIdentity(config.ID)
+		if err != nil {
+			log.WithError(err).Fatal("Failed to create our own identity!")
+		}
+	}
 
 	// find other directors
-	go d.DiscoverDirectors()
+	directors := make(chan *state.DirectorEvent)
+	go func() {
+		for event := range directors {
+			// We do not want this to be run under another goroutine
+			d.HandleDirectorEvent(event)
+		}
+	}()
+	go d.state.DiscoverDirectors(config.ID, directors)
 
 	// register as a director
-	go d.DirectorHeartbeat()
+	go d.state.DirectorHeartbeat(config.ID, heartbeatInterval)
 
 	// Setup the server
+	connections := make(chan *protocol.ServerConnection)
 	d.server = protocol.NewServer(config.HOST, config.PORT)
-	go d.server.Listen()
+	go func() {
+		for connection := range connections {
+			go d.HandleConnection(connection)
+		}
+	}()
+	go d.server.Listen(connections)
 
 	// block until interrupted
 	cleanupChannel := make(chan os.Signal, 1)
 	signal.Notify(cleanupChannel, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)
 	<-cleanupChannel
-	d.etc.Delete(etcPath(etcDirectorPrefix, config.ID), false)
 }
 
-func (d *Director) DirectorHeartbeat() {
-	for {
-		if _, err := d.etc.Set(etcPath(etcDirectorPrefix, config.ID), time.Now().String(), heartbeatInterval); err != nil {
-			log.Fatal(err)
-		}
-		// sleep for 9.9999999 seconds
-		time.Sleep((heartbeatInterval * time.Second) - 1)
+func (d *Director) HandleConnection(connection *protocol.ServerConnection) {
+	var (
+		err      error
+		cmd      string
+		startTLS bool
+	)
+	defer connection.Conn.Close()
+
+	// Validate the protocol
+	if err = connection.Proto.Validate(); err != nil {
+		log.WithError(err).Error("Protocol validation failed")
+		return
 	}
+
+	// Send the public key of our CA
+	if err = connection.Proto.SendCACertificate(d.authority.Certificate); err != nil {
+		log.WithError(err).Error("Failed to send CA certificate")
+		return
+	}
+
+	startTLS = false
+	for !startTLS {
+		// Read our setup command
+		// This will either be a signing request, possibly followed by a tls start, or just a tls start
+		cmd, err = connection.Proto.ReadString()
+		if err != nil {
+			log.WithError(err).Error("TLS setup failed")
+			return
+		}
+
+		switch cmd {
+		case protocol.SigningRequest:
+			request, err := connection.Proto.HandleSigningRequest()
+
+			// get the identity via the common name in the request
+			identity, err := d.state.LoadIdentity(request.Subject.CommonName)
+			if err != nil {
+				log.WithFields(log.Fields{
+					"error": err,
+					"id":    request.Subject.CommonName,
+				}).Error("Error while loading the identity")
+				return
+			}
+
+			if identity == nil {
+				// Invalid identity, this means we want to create a new identity for an admin to sign
+				identity = security.NewIdentity(request.Subject.CommonName)
+				identity.Request = request
+				d.state.StoreIdentity(identity)
+			} else {
+				// See if this identity has a certificate to send back
+				if identity.Certificate != nil {
+					connection.Proto.SendCertificate(identity.Certificate)
+				}
+			}
+
+		case protocol.StartTLS:
+			startTLS = true
+		}
+	}
+
+	// Get ready to switch to TLS mode and start RPC & Event Bus
 }
 
-func (d *Director) DiscoverDirectors() {
-	log.Print("Discovering other directors")
+func (d *Director) HandleDirectorEvent(event *state.DirectorEvent) {
+	if event.Action == "set" {
+		// check if we know about this director
+		log.WithFields(log.Fields{
+			"peer": event.Node,
+		}).Info("Peer registration")
+	}
 
-	updates := make(chan *etcd.Response)
+	if event.Action == "delete" {
+		log.WithFields(log.Fields{
+			"peer": event.Node,
+		}).Info("Peer deletion")
+	}
 
-	go func() {
-		if _, err := d.etc.Watch(etcDirectorPrefix, 0, true, updates, nil); err != nil {
-			log.Fatal(err)
-		}
-	}()
-
-	for res := range updates {
-		parts := strings.Split(res.Node.Key, "/")
-		node := parts[len(parts)-1]
-
-		if node == config.ID {
-			// ignore events about ourself
-			continue
-		}
-
-		if res.Action == "set" {
-			// check if we know about this director
-			log.WithFields(log.Fields{
-				"peer": node,
-			}).Info("Peer registration")
-		}
-
-		if res.Action == "delete" {
-			log.WithFields(log.Fields{
-				"peer": node,
-			}).Info("Peer deletion")
-		}
-
-		if res.Action == "expire" {
-			log.WithFields(log.Fields{
-				"peer": node,
-			}).Info("Peer expiration")
-		}
+	if event.Action == "expire" {
+		log.WithFields(log.Fields{
+			"peer": event.Node,
+		}).Info("Peer expiration")
 	}
 }

@@ -72,7 +72,12 @@ func (d *Director) createCA() {
 func (d *Director) createIdentity(name string) (*security.Identity, error) {
 	i := security.NewIdentity(name)
 
+	log.WithFields(log.Fields{
+		"name": name,
+	}).Info("Creating new identity")
+
 	i.NewKey()
+	i.NewRequest()
 
 	return i, nil
 }
@@ -84,6 +89,7 @@ func (d *Director) Run() {
 	d.state = state.NewState(config.ETCD_HOSTS)
 
 	// get our authority
+	log.Info("Loading authority")
 	d.authority, err = d.state.LoadAuthority()
 	if err != nil {
 		log.WithError(err).Fatal("Failed to load CA identity!")
@@ -94,6 +100,7 @@ func (d *Director) Run() {
 	}
 
 	// load our identity
+	log.Info("Loading identity")
 	d.identity, err = d.state.LoadIdentity(config.ID)
 	if err != nil {
 		log.WithError(err).Fatal("Failed to load our own identity!")
@@ -103,6 +110,18 @@ func (d *Director) Run() {
 		if err != nil {
 			log.WithError(err).Fatal("Failed to create our own identity!")
 		}
+
+		// Now sign the identity, to get back a completed certificate
+		cert, err := d.authority.Sign(d.identity.Request)
+		if err != nil {
+			log.WithError(err).Fatal("Failed to sign our own request!")
+		}
+
+		// Associate the certificate
+		d.identity.Certificate = cert
+
+		// Store our identity
+		d.state.StoreIdentity(d.identity)
 	}
 
 	// find other directors

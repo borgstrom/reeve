@@ -37,15 +37,15 @@ func NewCertificate(id string, key Key, parent *x509.Certificate) (*Certificate,
 	return c, nil
 }
 
-func CertFromTemplate(template *x509.Certificate, parent *x509.Certificate, key *Key) (*Certificate, error) {
-	derBytes, err := x509.CreateCertificate(rand.Reader, template, parent, key, key.PublicKey)
+func CertificateFromTemplate(template *x509.Certificate, parent *x509.Certificate, publicKey interface{}, privateKey *Key) (*Certificate, error) {
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, parent, publicKey, privateKey.PrivateKey)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to create CA certificate: %s", err.Error())
+		return nil, fmt.Errorf("Failed to create certificate: %s", err.Error())
 	}
 
 	cert, err := x509.ParseCertificate(derBytes)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse CA certificate: %s", err.Error())
+		return nil, fmt.Errorf("Failed to parse certificate: %s", err.Error())
 	}
 
 	return &Certificate{cert}, nil

@@ -7,6 +7,15 @@ Reeve is an RPC orchestration system, providing remote code execution and a even
 authentication and authorization using a system of identities and x509 certificates.
 
 
+Here be dragons
+---------------
+
+This is pre-alpha state right now.  It probably doesn't even run correctly at this point in time and
+everything is subject to change.
+
+There are a LOT of "TODO" notes throughout the code that also need to be reviewed.
+
+
 Theory / Notes
 --------------
 

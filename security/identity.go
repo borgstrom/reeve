@@ -45,7 +45,7 @@ func NewIdentity(id string) *Identity {
 	return i
 }
 
-// IsValid returns true if the Identity has a key and a cert or csr
+// IsValid returns true if the Identity has a cert or csr
 func (i *Identity) IsValid() bool {
 	return len(i.Id) > 0 && (i.Certificate != nil || i.Request != nil)
 }

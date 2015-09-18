@@ -33,8 +33,6 @@ import (
 	"net"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
-
 	"github.com/borgstrom/reeve/security"
 	"github.com/borgstrom/reeve/version"
 )
@@ -42,19 +40,20 @@ import (
 const (
 	Id             = "rēv"
 	Ack            = "ack"
-	CACertificate  = "ca"
+	Response       = "res"
 	SigningRequest = "csr"
-	SignedCert     = "crt"
 	StartTLS       = "tls"
+	Director       = "dir"
 )
 
 // RawProtocolConn represents our raw unencrypted protocol implementation
 // Servers & Clients start with this, then will upgrade it to a TLS connection once the handshake
 // and key exchange have been completed
 type RawProtocol struct {
-	conn    net.Conn
-	reader  *bufio.Reader
-	timeout int
+	conn   net.Conn
+	reader *bufio.Reader
+
+	deadline int
 }
 
 // NewRawProtocol creates a new RawProtocol instance based on a net.Conn
@@ -63,15 +62,14 @@ func NewRawProtocol(conn net.Conn) *RawProtocol {
 	p.conn = conn
 	p.reader = bufio.NewReader(p.conn)
 
-	// TODO: make this timeout configurable
-	p.timeout = 100
+	// TODO: make this deadline configurable
+	p.deadline = 500
 
 	return p
 }
 
 // WriteString writes the string value in s followed by a null byte
 func (p *RawProtocol) WriteString(s string) error {
-	p.conn.SetWriteDeadline(time.Now().Add(time.Duration(p.timeout) * time.Millisecond))
 	_, err := p.conn.Write([]byte(s + "\x00"))
 	if err != nil {
 		return err
@@ -79,9 +77,26 @@ func (p *RawProtocol) WriteString(s string) error {
 	return nil
 }
 
+// WriteStringWithDeadline writes the string with a deadline
+func (p *RawProtocol) WriteStringWithDeadline(s string) error {
+	p.conn.SetWriteDeadline(time.Now().Add(time.Duration(p.deadline) * time.Millisecond))
+	err := p.WriteString(s)
+	p.conn.SetWriteDeadline(time.Time{})
+	return err
+}
+
+// Resp sends an Response
+func (p *RawProtocol) Resp() error {
+	return p.WriteStringWithDeadline(Response)
+}
+
+// Ack sends an Ack
+func (p *RawProtocol) Ack() error {
+	return p.WriteStringWithDeadline(Ack)
+}
+
 // ReadString reads a string up to a null byte
 func (p *RawProtocol) ReadString() (string, error) {
-	p.conn.SetReadDeadline(time.Now().Add(time.Duration(p.timeout) * time.Millisecond))
 	bytes, err := p.reader.ReadBytes("\x00"[0])
 	if err != nil {
 		return "", err
@@ -90,21 +105,26 @@ func (p *RawProtocol) ReadString() (string, error) {
 	return string(bytes[0 : len(bytes)-1]), nil
 }
 
+// ReadStringWithDeadline reads a string from our connection with the specified deadline
+func (p *RawProtocol) ReadStringWithDeadline() (string, error) {
+	p.conn.SetReadDeadline(time.Now().Add(time.Duration(p.deadline) * time.Millisecond))
+	str, err := p.ReadString()
+	p.conn.SetReadDeadline(time.Time{})
+	return str, err
+}
+
 // Announce sends our protocol identifiers over the connection
 func (p *RawProtocol) Announce() error {
 	var err error
-	log.WithFields(log.Fields{
-		"address": p.conn.RemoteAddr(),
-	}).Debug("Announcing protocol")
 
-	if err = p.WriteString(Id); err != nil {
+	if err = p.WriteStringWithDeadline(Id); err != nil {
 		return fmt.Errorf("Failed to announce protocol: %s", err.Error())
 	}
-	if err = p.WriteString(version.ProtocolVersion); err != nil {
+	if err = p.WriteStringWithDeadline(version.ProtocolVersion); err != nil {
 		return fmt.Errorf("Failed to announce protocol version: %s", err.Error())
 	}
 
-	resp, err := p.ReadString()
+	resp, err := p.ReadStringWithDeadline()
 	if err != nil {
 		return fmt.Errorf("Failed to read Ack: %s", err.Error())
 	}
@@ -112,40 +132,31 @@ func (p *RawProtocol) Announce() error {
 		return errors.New("Invalid Ack")
 	}
 
-	log.WithFields(log.Fields{
-		"address": p.conn.RemoteAddr(),
-	}).Debug("Protocol announced")
-
 	return nil
 }
 
 // Validate reads from the connection and makes sure the protocol version being announced is valid
+// XXX we should think about how we'll handle the case where you want to do an upgrade between
+// XXX protocol versions
 func (p *RawProtocol) Validate() error {
-	log.WithFields(log.Fields{
-		"address": p.conn.RemoteAddr(),
-	}).Debug("Verifying protocol")
-
-	protoId, err := p.ReadString()
+	protoId, err := p.ReadStringWithDeadline()
 	if err != nil || protoId != Id {
 		return errors.New("Invalid protocol identifier")
 	}
 
-	protoVer, err := p.ReadString()
+	protoVer, err := p.ReadStringWithDeadline()
 	if err != nil || protoVer != version.ProtocolVersion {
 		return errors.New("Invalid protocol version")
 	}
 
-	if err = p.WriteString(Ack); err != nil {
+	if err = p.WriteStringWithDeadline(Ack); err != nil {
 		return errors.New("Failed to ack protocol announcement")
 	}
-
-	log.WithFields(log.Fields{
-		"address": p.conn.RemoteAddr(),
-	}).Debug("Protocol verified")
 
 	return nil
 }
 
+// SendPEMWriter writes the specified pem object and handles the ack
 func (p *RawProtocol) SendPEMWriter(pem security.PEMWriter) error {
 	var err error
 
@@ -157,14 +168,6 @@ func (p *RawProtocol) SendPEMWriter(pem security.PEMWriter) error {
 		return fmt.Errorf("Failed to write PEM trailing null to the connection: %s", err.Error())
 	}
 
-	resp, err := p.ReadString()
-	if err != nil {
-		return fmt.Errorf("Failed to read Ack: %s", err.Error())
-	}
-	if resp != Ack {
-		return errors.New("Invalid Ack")
-	}
-
 	return nil
 }
 
@@ -174,7 +177,7 @@ func (p *RawProtocol) SendSigningRequest(request *security.Request) error {
 		err error
 	)
 
-	if err = p.WriteString(SigningRequest); err != nil {
+	if err = p.WriteStringWithDeadline(SigningRequest); err != nil {
 		return fmt.Errorf("Failed to setup signing request: %s", err.Error())
 	}
 
@@ -199,28 +202,7 @@ func (p *RawProtocol) HandleSigningRequest() (*security.Request, error) {
 		return nil, fmt.Errorf("Failed to load pem encoded signing request: %s", err)
 	}
 
-	if err = p.WriteString(Ack); err != nil {
-		return nil, errors.New("Failed to ack signing request")
-	}
-
 	return request, nil
-}
-
-// SendCACertificate sends a CA certificate as a PEM encoded string
-func (p *RawProtocol) SendCACertificate(cert *security.Certificate) error {
-	var (
-		err error
-	)
-
-	if err = p.WriteString(CACertificate); err != nil {
-		return fmt.Errorf("Failed to setup CA certificate send: %s", err.Error())
-	}
-
-	if err = p.SendPEMWriter(cert); err != nil {
-		return fmt.Errorf("Failed to send CA: %s", err.Error())
-	}
-
-	return nil
 }
 
 // SendCertificate sends a security certificate as a PEM encoded string
@@ -228,10 +210,6 @@ func (p *RawProtocol) SendCertificate(cert *security.Certificate) error {
 	var (
 		err error
 	)
-
-	if err = p.WriteString(SignedCert); err != nil {
-		return fmt.Errorf("Failed to setup signed certificate send: %s", err.Error())
-	}
 
 	if err = p.SendPEMWriter(cert); err != nil {
 		return fmt.Errorf("Failed to send crt: %s", err.Error())
@@ -242,6 +220,8 @@ func (p *RawProtocol) SendCertificate(cert *security.Certificate) error {
 
 //
 func (p *RawProtocol) HandleCertificate() (*security.Certificate, error) {
+	var err error
+
 	pemCert, err := p.ReadString()
 	if err != nil {
 		return nil, fmt.Errorf("Failed to read pem encoded certificate: %s", err.Error())
@@ -249,10 +229,10 @@ func (p *RawProtocol) HandleCertificate() (*security.Certificate, error) {
 
 	cert, err := security.CertificateFromPEM([]byte(pemCert))
 	if err != nil {
-		return nil, fmt.Errorf("Failed to load pem coded certificate: %s", err.Error())
+		return nil, fmt.Errorf("Failed to load pem encoded certificate: %s", err.Error())
 	}
 
-	if err = p.WriteString(Ack); err != nil {
+	if err = p.WriteStringWithDeadline(Ack); err != nil {
 		return nil, errors.New("Failed to ack certificate")
 	}
 

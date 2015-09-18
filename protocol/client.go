@@ -20,48 +20,32 @@ package protocol
 
 import (
 	"net"
-
-	"github.com/borgstrom/reeve/security"
 )
 
 type Client struct {
-	director string
-	conn     net.Conn
-	proto    *RawProtocol
+	Director string
+	Conn     net.Conn
+	Proto    *RawProtocol
 }
 
 // Creates a new Client and dials the director
 func NewClient(director string) *Client {
 	c := new(Client)
 
-	c.director = director
+	c.Director = director
 
 	return c
 }
 
 // Connect sets up the connection to the director
 func (c *Client) Connect() error {
-	conn, err := net.Dial("tcp", c.director)
+	conn, err := net.Dial("tcp", c.Director)
 	if err != nil {
 		return err
 	}
 
-	c.conn = conn
-	c.proto = NewRawProtocol(c.conn)
+	c.Conn = conn
+	c.Proto = NewRawProtocol(c.Conn)
 
-	// We need to send our protocolIdentifer + our supported version
-	if err = c.proto.Announce(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (c *Client) SendSigningRequest(identity *security.Identity) error {
-	var err error
-
-	if err = c.proto.SendSigningRequest(identity.Request); err != nil {
-		return err
-	}
 	return nil
 }

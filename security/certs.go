@@ -27,16 +27,14 @@ import (
 	"io"
 )
 
+// Certificate is our custom struct that we attach functionality to
 type Certificate struct {
 	*x509.Certificate
 }
 
-func NewCertificate(id string, key Key, parent *x509.Certificate) (*Certificate, error) {
-	c := new(Certificate)
-
-	return c, nil
-}
-
+// CertificateFromTemplate takes a template, parent, public key & private key and returns a
+// composed certificate.  Generally this should be called from an Authority that takes care of
+// filling in all of the details from higher level structs.
 func CertificateFromTemplate(template *x509.Certificate, parent *x509.Certificate, publicKey interface{}, privateKey *Key) (*Certificate, error) {
 	derBytes, err := x509.CreateCertificate(rand.Reader, template, parent, publicKey, privateKey.PrivateKey)
 	if err != nil {
@@ -51,6 +49,8 @@ func CertificateFromTemplate(template *x509.Certificate, parent *x509.Certificat
 	return &Certificate{cert}, nil
 }
 
+// CertificateFromPEM takes a byte slice that contains a PEM encoded certificate and returns a
+// composed Certificate
 func CertificateFromPEM(pemCert []byte) (*Certificate, error) {
 	certBlock, _ := pem.Decode(pemCert)
 	if certBlock == nil {

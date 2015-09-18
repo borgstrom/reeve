@@ -40,8 +40,7 @@ func NewServerConnection(conn net.Conn, proto *RawProtocol) *ServerConnection {
 }
 
 type Server struct {
-	address  string
-	incoming chan net.Conn
+	address string
 }
 
 func NewServer(host string, port int) *Server {

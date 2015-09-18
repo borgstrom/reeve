@@ -40,8 +40,9 @@ const (
 )
 
 type Agent struct {
-	identity *security.Identity
-	client   *protocol.Client
+	identity             *security.Identity
+	client               *protocol.Client
+	authorityCertificate *security.Certificate
 }
 
 func NewAgent() *Agent {
@@ -51,7 +52,9 @@ func NewAgent() *Agent {
 }
 
 func (a *Agent) Run() {
-	var err error
+	var (
+		err error
+	)
 
 	// Get our Identity ready
 	a.prepareIdentity()
@@ -64,32 +67,58 @@ func (a *Agent) Run() {
 			"https://github.com/borgstrom/reeve/issues")
 	}
 
+	logger := log.WithFields(log.Fields{
+		"director": config.DIRECTOR,
+	})
+
+	// Connect to the director
+	logger.Info("Connecting to director")
+	a.client = protocol.NewClient(config.DIRECTOR)
+	if err = a.client.Connect(); err != nil {
+		log.WithError(err).Fatal("Failed to connect to the director")
+	}
+
+	//
+	logger.Debug("Verifying protocol")
+	if err = a.client.Proto.Validate(); err != nil {
+		log.WithError(err).Fatal("Failed to validate the protocol")
+	}
+	logger.Debug("Protocol verified")
+
 	// We need to get the director to sign our identity before we can do anything else
 	for !a.identity.IsSigned() {
-		// Connect to the director
-		log.WithFields(log.Fields{
-			"director": config.DIRECTOR,
-		}).Info("Connecting to director")
-
-		a.client = protocol.NewClient(config.DIRECTOR)
-		if err = a.client.Connect(); err != nil {
-			log.WithFields(log.Fields{
-				"error":    err,
-				"director": config.DIRECTOR,
-			}).Fatal("Failed to connect to the director")
+		logger.Debug("Sending signing request")
+		if err = a.client.Proto.SendSigningRequest(a.identity.Request); err != nil {
+			logger.WithError(err).Fatal("Failed to send signing request to the director")
 		}
 
-		if err = a.client.SendSigningRequest(a.identity); err != nil {
-			log.WithError(err).Fatal("Failed to send signing request to the director")
+		logger.Debug("Reading response")
+		resp, err := a.client.Proto.ReadStringWithDeadline()
+		if err != nil {
+			logger.WithError(err).Fatal("Failed to read response to csr")
 		}
+		logger.WithFields(log.Fields{"resp": resp}).Debug("Handling response")
 
-		if !a.identity.IsSigned() {
-			log.Info("Waiting for our identity to be signed by the director...")
+		if resp == protocol.Ack {
+			logger.Info("Waiting for our identity to be signed by the director...")
 			time.Sleep(15 * time.Second)
+		} else if resp == protocol.Response {
+			logger.Info("Receiving signed certificate")
+			a.identity.Certificate, err = a.client.Proto.HandleCertificate()
+			if err != nil {
+				logger.WithError(err).Fatal("Failed to read signed certificate!")
+			}
+
+			logger.Info("Receving authority certificate")
+			a.authorityCertificate, err = a.client.Proto.HandleCertificate()
+			if err != nil {
+				logger.WithError(err).Fatal("Failed to read authority certificate")
+			}
 		}
 	}
 
 	// Start TLS
+	logger.Info("Starting TLS")
 
 	// block until interrupted
 	cleanupChannel := make(chan os.Signal, 1)

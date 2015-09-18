@@ -161,36 +161,50 @@ func (d *Director) HandleConnection(connection *protocol.ServerConnection) {
 	)
 	defer connection.Conn.Close()
 
-	// Validate the protocol
-	if err = connection.Proto.Validate(); err != nil {
-		log.WithError(err).Error("Protocol validation failed")
+	// setup a base logger so all messages include our address
+	logger := log.WithFields(log.Fields{
+		"address": connection.Conn.RemoteAddr().String(),
+	})
+
+	// Announce the protocol
+	logger.Debug("Announcing protocol")
+	if err = connection.Proto.Announce(); err != nil {
+		log.WithError(err).Error("Protocol announcement failed")
 		return
 	}
+	logger.Debug("Protocol announced")
 
-	// Send the public key of our CA
-	if err = connection.Proto.SendCACertificate(d.authority.Certificate); err != nil {
-		log.WithError(err).Error("Failed to send CA certificate")
-		return
-	}
-
+	logger.Debug("Beginning TLS setup")
 	startTLS = false
 	for !startTLS {
-		// Read our setup command
-		// This will either be a signing request, possibly followed by a tls start, or just a tls start
+		// Read our command
 		cmd, err = connection.Proto.ReadString()
 		if err != nil {
-			log.WithError(err).Error("TLS setup failed")
+			logger.WithError(err).Error("TLS setup failed")
 			return
 		}
 
+		logger.WithFields(log.Fields{
+			"cmd": cmd,
+		}).Debug("Handling new command")
+
 		switch cmd {
 		case protocol.SigningRequest:
+			logger.Debug("Reading signing request")
 			request, err := connection.Proto.HandleSigningRequest()
+			if err != nil {
+				logger.WithError(err).Error("Failed to read signing request")
+				return
+			}
 
 			// get the identity via the common name in the request
+			logger.WithFields(log.Fields{
+				"name": request.Subject.CommonName,
+			}).Debug("Loading identity")
+
 			identity, err := d.state.LoadIdentity(request.Subject.CommonName)
 			if err != nil {
-				log.WithFields(log.Fields{
+				logger.WithFields(log.Fields{
 					"error": err,
 					"id":    request.Subject.CommonName,
 				}).Error("Error while loading the identity")
@@ -199,18 +213,52 @@ func (d *Director) HandleConnection(connection *protocol.ServerConnection) {
 
 			if identity == nil {
 				// Invalid identity, this means we want to create a new identity for an admin to sign
+				logger.WithFields(log.Fields{
+					"name": request.Subject.CommonName,
+				}).Debug("Creating new identity")
+
 				identity = security.NewIdentity(request.Subject.CommonName)
 				identity.Request = request
 				d.state.StoreIdentity(identity)
+
+				if err = connection.Proto.Ack(); err != nil {
+					logger.WithError(err).Error("Failed to ack signing request")
+					return
+				}
 			} else {
 				// See if this identity has a certificate to send back
 				if identity.Certificate != nil {
+					logger.WithFields(log.Fields{
+						"name": request.Subject.CommonName,
+					}).Debug("Sending signed certificate")
+
+					if err = connection.Proto.Resp(); err != nil {
+						logger.WithError(err).Error("Failed to signal response")
+						return
+					}
+
 					connection.Proto.SendCertificate(identity.Certificate)
+					connection.Proto.SendCertificate(d.authority.Certificate)
+				} else {
+					if err = connection.Proto.Ack(); err != nil {
+						logger.WithError(err).Error("Failed to ack signing request")
+						return
+					}
+
+					logger.WithFields(log.Fields{
+						"name": request.Subject.CommonName,
+					}).Debug("Request is still pending")
 				}
 			}
 
 		case protocol.StartTLS:
 			startTLS = true
+
+		default:
+			logger.WithFields(log.Fields{
+				"cmd": cmd,
+			}).Error("Unknown command")
+			return
 		}
 	}
 

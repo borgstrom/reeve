@@ -252,7 +252,9 @@ func (d *Director) HandleConnection(connection *protocol.ServerConnection) {
 				}
 			}
 
-		case protocol.StartTLS:
+		case protocol.TLS:
+			// Mark that we're now ready to start TLS
+			// The actual connection upgrade will happen out of the for loop
 			startTLS = true
 
 		default:
@@ -264,6 +266,19 @@ func (d *Director) HandleConnection(connection *protocol.ServerConnection) {
 	}
 
 	// Get ready to switch to TLS mode and start RPC & Event Bus
+	logger.Debug("Upgrading connection to TLS")
+	if err = connection.Proto.HandleStartTLS(d.identity, d.authority.Certificate); err != nil {
+		logger.WithError(err).Error("Failed up handle Start TLS")
+		return
+	}
+
+	logger.Debug("Upgraded")
+
+	cmd, err = connection.Proto.ReadString()
+	logger.WithFields(log.Fields{"cmd": cmd}).Info("Got cmd")
+
+	cmd, err = connection.Proto.ReadString()
+	logger.WithFields(log.Fields{"cmd": cmd}).Info("Got cmd 2")
 }
 
 func (d *Director) HandleDirectorEvent(event *state.DirectorEvent) {

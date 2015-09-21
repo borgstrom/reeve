@@ -28,6 +28,9 @@ package protocol
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"net"
 	"time"
@@ -41,7 +44,7 @@ const (
 	Ack            = "ack"
 	Response       = "res"
 	SigningRequest = "csr"
-	StartTLS       = "tls"
+	TLS            = "tls"
 	Director       = "dir"
 )
 
@@ -59,12 +62,16 @@ type RawProtocol struct {
 func NewRawProtocol(conn net.Conn) *RawProtocol {
 	p := new(RawProtocol)
 	p.conn = conn
-	p.reader = bufio.NewReader(p.conn)
+	p.setupBuffers()
 
 	// TODO: make this deadline configurable
 	p.deadline = 500
 
 	return p
+}
+
+func (p *RawProtocol) setupBuffers() {
+	p.reader = bufio.NewReader(p.conn)
 }
 
 // WriteString writes the string value in s followed by a null byte
@@ -110,6 +117,108 @@ func (p *RawProtocol) ReadStringWithDeadline() (string, error) {
 	str, err := p.ReadString()
 	p.conn.SetReadDeadline(time.Time{})
 	return str, err
+}
+
+func (p *RawProtocol) tlsSetup(config *tls.Config, identity *security.Identity, caCertificate *security.Certificate) error {
+	var (
+		certBuf bytes.Buffer
+		keyBuf  bytes.Buffer
+		err     error
+	)
+
+	// We need to prepare our certs & keys for the TLS config
+	// Write out our identity certificate and the authority certificate to a single buffer
+	identity.Certificate.WritePEM(&certBuf)
+	caCertificate.WritePEM(&certBuf)
+
+	// Write the key to the other
+	identity.Key.WritePEM(&keyBuf)
+
+	// Load the key pair
+	cert, err := tls.X509KeyPair(certBuf.Bytes(), keyBuf.Bytes())
+	if err != nil {
+		return err
+	}
+
+	ca, err := x509.ParseCertificate(cert.Certificate[1])
+	if err != nil {
+		return err
+	}
+
+	// Make our authority certificate as the only item in the pool used for root CAs
+	certPool := x509.NewCertPool()
+	certPool.AddCert(ca)
+
+	// Update the config
+	config.Certificates = []tls.Certificate{cert}
+	config.RootCAs = certPool
+	config.ClientCAs = certPool
+
+	return nil
+}
+
+// StartTLS takes an identity and an authority certificate and upgrades the net.Conn on the protocol to TLS
+func (p *RawProtocol) StartTLS(identity *security.Identity, caCertificate *security.Certificate) error {
+	var (
+		err     error
+		tlsConn *tls.Conn
+	)
+
+	if err = p.WriteStringWithDeadline(TLS); err != nil {
+		return err
+	}
+
+	// Build the config
+	config := new(tls.Config)
+	config.ServerName = "dir"
+
+	// Setup the tls connection
+	if err = p.tlsSetup(config, identity, caCertificate); err != nil {
+		return err
+	}
+
+	// Upgrade the connection to TLS
+	tlsConn = tls.Client(p.conn, config)
+	if err = tlsConn.Handshake(); err != nil {
+		return err
+	}
+
+	// And replace the original connection
+	p.conn = net.Conn(tlsConn)
+	p.setupBuffers()
+
+	return nil
+}
+
+func (p *RawProtocol) HandleStartTLS(identity *security.Identity, caCertificate *security.Certificate) error {
+	var (
+		err     error
+		tlsConn *tls.Conn
+	)
+
+	// Build the config
+	config := new(tls.Config)
+	config.ClientAuth = tls.RequireAndVerifyClientCert
+
+	// Setup the tls connection
+	if err := p.tlsSetup(config, identity, caCertificate); err != nil {
+		return err
+	}
+
+	// Upgrade the connection to TLS
+	tlsConn = tls.Server(p.conn, config)
+	if err = tlsConn.Handshake(); err != nil {
+		return err
+	}
+
+	// And replace the original connection
+	p.conn = net.Conn(tlsConn)
+	p.setupBuffers()
+
+	// Send an Ack
+	p.Ack()
+
+	return nil
 }
 
 // Announce sends our protocol identifiers over the connection

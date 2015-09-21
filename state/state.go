@@ -39,7 +39,7 @@ const (
 	etcPendingIdentitiesPrefix = "/identities/_pending"
 
 	etcCertificate = "crt"
-	etcKey         = "pkey" // we can't use key, since it's used by etcd
+	etcKey         = "key"
 	etcRequest     = "csr"
 	etcSerial      = "serial"
 )
@@ -159,6 +159,8 @@ func (s *State) LoadIdentity(id string) (*security.Identity, error) {
 		if err.Error()[0:3] != "100" {
 			return nil, err
 		}
+
+		// We don't require a key for an identity, so just continue on here
 	} else {
 		i.Key, err = security.KeyFromPEM(pemBytes)
 		if err != nil {

@@ -130,7 +130,24 @@ func (a *Agent) Run() {
 	}
 
 	// Start TLS
-	logger.Info("Starting TLS")
+	logger.Info("Upgrading connection to TLS")
+	if err = a.client.Proto.StartTLS(a.identity, a.authorityCertificate); err != nil {
+		logger.WithError(err).Fatal("Failed to start TLS")
+	}
+
+	// Read a string, this will happen over the now encrypted channel
+	resp, err := a.client.Proto.ReadString()
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to ack TLS")
+	}
+
+	if resp != protocol.Ack {
+		logger.WithFields(log.Fields{"resp": resp}).Fatal("Failed to receive Ack in response to start TLS")
+	}
+
+	logger.Info("TLS connection established")
+
+	a.client.Proto.WriteString("ketchup")
 
 	// block until interrupted
 	cleanupChannel := make(chan os.Signal, 1)
@@ -150,6 +167,17 @@ func (a *Agent) prepareIdentity() {
 	log.WithFields(log.Fields{
 		"keydir": config.KEYDIR,
 	}).Debug("Loading identity keys")
+
+	caFile := path.Join(config.KEYDIR, caName)
+	_, err = os.Stat(caFile)
+	if err == nil {
+		// The ca exists, load it
+		fileBytes, err = ioutil.ReadFile(caFile)
+		a.authorityCertificate, err = security.CertificateFromPEM(fileBytes)
+		if err != nil {
+			log.WithError(err).Fatal("Failed to load ca certificate")
+		}
+	}
 
 	keyFile := path.Join(config.KEYDIR, keyName)
 	_, err = os.Stat(keyFile)

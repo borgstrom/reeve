@@ -147,8 +147,6 @@ func (a *Agent) Run() {
 
 	logger.Info("TLS connection established")
 
-	a.client.Proto.WriteString("ketchup")
-
 	// block until interrupted
 	cleanupChannel := make(chan os.Signal, 1)
 	signal.Notify(cleanupChannel, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)

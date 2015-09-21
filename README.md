@@ -145,5 +145,10 @@ simplistic fire hose of events and payloads.  For each event targeted to the age
 event id\x00payload\x00
 ```
 
+/dev/urandom
+============
+
+Releases will be named after condiments. (First version to be ketchup)
+
 
 [//]: # vim: set ft=markdown tw=100 wrap spell :

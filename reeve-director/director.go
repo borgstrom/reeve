@@ -273,12 +273,6 @@ func (d *Director) HandleConnection(connection *protocol.ServerConnection) {
 	}
 
 	logger.Debug("Upgraded")
-
-	cmd, err = connection.Proto.ReadString()
-	logger.WithFields(log.Fields{"cmd": cmd}).Info("Got cmd")
-
-	cmd, err = connection.Proto.ReadString()
-	logger.WithFields(log.Fields{"cmd": cmd}).Info("Got cmd 2")
 }
 
 func (d *Director) HandleDirectorEvent(event *state.DirectorEvent) {

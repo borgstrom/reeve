@@ -96,6 +96,10 @@ func Sign(cmd *cobra.Command, identities []string) {
 			logger.WithError(err).Fatal("Failed to sign the request")
 		}
 
+		if err = s.StoreAuthoritySerial(authority); err != nil {
+			logger.WithError(err).Fatal("Failed to store the authority serial number")
+		}
+
 		identity.Certificate = cert
 		if err = s.StoreIdentity(identity); err != nil {
 			log.WithError(err).Fatal("Failed to store identity after signing request")

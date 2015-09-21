@@ -51,7 +51,7 @@ func NewServer(host string, port int) *Server {
 	return s
 }
 
-func (s *Server) Listen(connections chan *ServerConnection) {
+func (s *Server) Listen(connections chan<- *ServerConnection) {
 	log.WithFields(log.Fields{
 		"address": s.address,
 	}).Print("Listening")

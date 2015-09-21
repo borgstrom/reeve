@@ -33,13 +33,24 @@ import (
 )
 
 const (
-	etcDirectorPrefix   = "/directors"
-	etcIdentitiesPrefix = "/identities"
-	etcAuthorityPrefix  = "/authority"
+	etcAuthorityPrefix         = "/authority"
+	etcDirectorPrefix          = "/directors"
+	etcIdentitiesPrefix        = "/identities"
+	etcPendingIdentitiesPrefix = "/identities/_pending"
+
+	etcCertificate = "crt"
+	etcKey         = "pkey" // we can't use key, since it's used by etcd
+	etcRequest     = "csr"
+	etcSerial      = "serial"
 )
 
 func etcPath(parts ...string) string {
 	return strings.Join(parts, "/")
+}
+
+func idFromPath(path string) string {
+	parts := strings.Split(path, "/")
+	return parts[len(parts)-1]
 }
 
 type DirectorEvent struct {
@@ -57,7 +68,7 @@ func NewState(etcHosts []string) *State {
 
 	log.WithFields(log.Fields{
 		"hosts": etcHosts,
-	}).Info("Connecting to etcd")
+	}).Debug("Connecting to etcd")
 	s.etc = etcd.NewClient(etcHosts)
 
 	return s
@@ -120,8 +131,7 @@ func (s *State) DiscoverDirectors(localId string, events chan *DirectorEvent) {
 	}()
 
 	for res := range updates {
-		parts := strings.Split(res.Node.Key, "/")
-		node := parts[len(parts)-1]
+		node := idFromPath(res.Node.Key)
 
 		if node == localId {
 			// ignore events about ourself
@@ -144,7 +154,7 @@ func (s *State) LoadIdentity(id string) (*security.Identity, error) {
 
 	i := security.NewIdentity(id)
 
-	pemBytes, err = s.getBytes(etcPath(etcIdentitiesPrefix, id, "key"))
+	pemBytes, err = s.getBytes(etcPath(etcIdentitiesPrefix, id, etcKey))
 	if err != nil {
 		if err.Error()[0:3] != "100" {
 			return nil, err
@@ -156,26 +166,25 @@ func (s *State) LoadIdentity(id string) (*security.Identity, error) {
 		}
 	}
 
-	pemBytes, err = s.getBytes(etcPath(etcIdentitiesPrefix, id, "crt"))
+	pemBytes, err = s.getBytes(etcPath(etcIdentitiesPrefix, id, etcCertificate))
 	if err != nil {
 		if err.Error()[0:3] != "100" {
 			return nil, err
 		}
-
-		// if there's no certificate see if there's a signing request
-		pemBytes, err = s.getBytes(etcPath(etcIdentitiesPrefix, id, "csr"))
-		if err != nil {
-			if err.Error()[0:3] != "100" {
-				return nil, err
-			}
-		} else {
-			i.Request, err = security.RequestFromPEM(pemBytes)
-			if err != nil {
-				return nil, err
-			}
-		}
 	} else {
 		i.Certificate, err = security.CertificateFromPEM(pemBytes)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	pemBytes, err = s.getBytes(etcPath(etcIdentitiesPrefix, id, etcRequest))
+	if err != nil {
+		if err.Error()[0:3] != "100" {
+			return nil, err
+		}
+	} else {
+		i.Request, err = security.RequestFromPEM(pemBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -190,18 +199,66 @@ func (s *State) LoadIdentity(id string) (*security.Identity, error) {
 }
 
 // StoreIdentity stores the specified identity in etcd
-func (s *State) StoreIdentity(identity *security.Identity) {
+func (s *State) StoreIdentity(identity *security.Identity) error {
+	var err error
+
 	if identity.Key != nil {
-		s.setPEM(etcPath(etcIdentitiesPrefix, identity.Id, "key"), identity.Key)
+		if err = s.setPEM(etcPath(etcIdentitiesPrefix, identity.Id, etcKey), identity.Key); err != nil {
+			return err
+		}
 	}
 
 	if identity.Certificate != nil {
-		s.setPEM(etcPath(etcIdentitiesPrefix, identity.Id, "crt"), identity.Certificate)
+		if err = s.setPEM(etcPath(etcIdentitiesPrefix, identity.Id, etcCertificate), identity.Certificate); err != nil {
+			return err
+		}
 	}
 
 	if identity.Request != nil {
-		s.setPEM(etcPath(etcIdentitiesPrefix, identity.Id, "csr"), identity.Request)
+		if err = s.setPEM(etcPath(etcIdentitiesPrefix, identity.Id, etcRequest), identity.Request); err != nil {
+			return err
+		}
 	}
+
+	return nil
+}
+
+// AddIdentityToPending adds the provided identity to the pending list
+func (s *State) AddIdentityToPending(identity *security.Identity) error {
+	_, err := s.etc.Set(etcPath(etcPendingIdentitiesPrefix, identity.Id), "1", 0)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// RemoveIdentityFromPending removes the provided identity from the pending list
+func (s *State) RemoveIdentityFromPending(identity *security.Identity) error {
+	_, err := s.etc.Delete(etcPath(etcPendingIdentitiesPrefix, identity.Id), false)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// GetPendingIdentities returns a string slice with all of the pending ids
+func (s *State) GetPendingIdentities() ([]string, error) {
+	var identities []string
+
+	resp, err := s.etc.Get(etcPendingIdentitiesPrefix, true, false)
+	if err != nil {
+		if err.Error()[:3] != "100" {
+			return nil, err
+		}
+		return nil, nil
+	}
+	for _, node := range resp.Node.Nodes {
+		identities = append(identities, idFromPath(node.Key))
+	}
+
+	return identities, nil
 }
 
 // LoadAuthority fetches the authority information
@@ -213,7 +270,7 @@ func (s *State) LoadAuthority() (*security.Authority, error) {
 		cert     *security.Certificate
 	)
 
-	pemBytes, err = s.getBytes(etcPath(etcAuthorityPrefix, "key"))
+	pemBytes, err = s.getBytes(etcPath(etcAuthorityPrefix, etcKey))
 	if err != nil {
 		if err.Error()[0:3] != "100" {
 			return nil, err
@@ -227,7 +284,7 @@ func (s *State) LoadAuthority() (*security.Authority, error) {
 		}
 	}
 
-	pemBytes, err = s.getBytes(etcPath(etcAuthorityPrefix, "crt"))
+	pemBytes, err = s.getBytes(etcPath(etcAuthorityPrefix, etcCertificate))
 	if err != nil {
 		if err.Error()[0:3] != "100" {
 			return nil, err
@@ -242,7 +299,7 @@ func (s *State) LoadAuthority() (*security.Authority, error) {
 	}
 
 	// Load the serial number
-	resp, err := s.etc.Get(etcPath(etcAuthorityPrefix, "serial"), false, false)
+	resp, err := s.etc.Get(etcPath(etcAuthorityPrefix, etcSerial), false, false)
 	if err != nil {
 		return nil, err
 	}
@@ -258,22 +315,24 @@ func (s *State) LoadAuthority() (*security.Authority, error) {
 	}, nil
 }
 
-func (s *State) StoreAuthority(authority *security.Authority) {
+func (s *State) StoreAuthority(authority *security.Authority) error {
 	var err error
 
-	if err = s.setPEM(etcPath(etcAuthorityPrefix, "key"), authority.Key); err != nil {
-		log.WithError(err).Fatal("Failed to store authority key")
+	if err = s.setPEM(etcPath(etcAuthorityPrefix, etcKey), authority.Key); err != nil {
+		return err
 	}
-	if err = s.setPEM(etcPath(etcAuthorityPrefix, "crt"), authority.Certificate); err != nil {
-		log.WithError(err).Fatal("Failed to store authority certificate")
+	if err = s.setPEM(etcPath(etcAuthorityPrefix, etcCertificate), authority.Certificate); err != nil {
+		return err
 	}
 
-	s.StoreAuthoritySerial(authority)
+	return s.StoreAuthoritySerial(authority)
 }
 
-func (s *State) StoreAuthoritySerial(authority *security.Authority) {
-	_, err := s.etc.Set(etcPath(etcAuthorityPrefix, "serial"), authority.Serial.String(), 0)
+func (s *State) StoreAuthoritySerial(authority *security.Authority) error {
+	_, err := s.etc.Set(etcPath(etcAuthorityPrefix, etcSerial), authority.Serial.String(), 0)
 	if err != nil {
-		log.WithError(err).Fatal("Failed to store authority serial")
+		return err
 	}
+
+	return nil
 }

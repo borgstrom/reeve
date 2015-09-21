@@ -23,7 +23,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"io"
 )
 
@@ -35,12 +34,12 @@ type Request struct {
 func NewRequest(priv *Key, template *x509.CertificateRequest) (*Request, error) {
 	derBytes, err := x509.CreateCertificateRequest(rand.Reader, template, priv.PrivateKey)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to create certificate bytes: %s", err.Error())
+		return nil, err
 	}
 
 	csr, err := x509.ParseCertificateRequest(derBytes)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse certificate bytes: %s", err.Error())
+		return nil, err
 	}
 
 	return &Request{csr}, nil
@@ -54,7 +53,7 @@ func RequestFromPEM(pemRequest []byte) (*Request, error) {
 
 	request, err := x509.ParseCertificateRequest(requestBlock.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse request: %s", err.Error())
+		return nil, err
 	}
 
 	return &Request{request}, nil
@@ -67,7 +66,7 @@ func (r Request) WritePEM(buf io.Writer) error {
 		Bytes: r.Raw,
 	})
 	if err != nil {
-		return fmt.Errorf("Failed to PEM encode request: %s", err.Error())
+		return err
 	}
 
 	return nil

@@ -17,7 +17,10 @@
 package version
 
 import (
+	"fmt"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
 const (
@@ -29,6 +32,15 @@ var (
 
 	// should be set during built with -X github.com/borgstrom/reeve/version.GitSHA=XXXXXXX
 	GitSHA = "master"
+
+	// for importing into the cli portions
+	VersionCommand = &cobra.Command{
+		Use:   "version",
+		Short: "Show the current version",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Println(Version)
+		},
+	}
 )
 
 // Only keep x.y from versions x.y.z-abc

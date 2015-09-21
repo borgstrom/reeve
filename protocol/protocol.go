@@ -29,7 +29,6 @@ package protocol
 import (
 	"bufio"
 	"errors"
-	"fmt"
 	"net"
 	"time"
 
@@ -118,15 +117,15 @@ func (p *RawProtocol) Announce() error {
 	var err error
 
 	if err = p.WriteStringWithDeadline(Id); err != nil {
-		return fmt.Errorf("Failed to announce protocol: %s", err.Error())
+		return err
 	}
 	if err = p.WriteStringWithDeadline(version.ProtocolVersion); err != nil {
-		return fmt.Errorf("Failed to announce protocol version: %s", err.Error())
+		return err
 	}
 
 	resp, err := p.ReadStringWithDeadline()
 	if err != nil {
-		return fmt.Errorf("Failed to read Ack: %s", err.Error())
+		return err
 	}
 	if resp != Ack {
 		return errors.New("Invalid Ack")
@@ -150,7 +149,7 @@ func (p *RawProtocol) Validate() error {
 	}
 
 	if err = p.WriteStringWithDeadline(Ack); err != nil {
-		return errors.New("Failed to ack protocol announcement")
+		return err
 	}
 
 	return nil
@@ -161,11 +160,11 @@ func (p *RawProtocol) SendPEMWriter(pem security.PEMWriter) error {
 	var err error
 
 	if err = pem.WritePEM(p.conn); err != nil {
-		return fmt.Errorf("Failed to write PEM bytes to the connection: %s", err.Error())
+		return err
 	}
 	_, err = p.conn.Write([]byte("\x00"))
 	if err != nil {
-		return fmt.Errorf("Failed to write PEM trailing null to the connection: %s", err.Error())
+		return err
 	}
 
 	return nil
@@ -178,11 +177,11 @@ func (p *RawProtocol) SendSigningRequest(request *security.Request) error {
 	)
 
 	if err = p.WriteStringWithDeadline(SigningRequest); err != nil {
-		return fmt.Errorf("Failed to setup signing request: %s", err.Error())
+		return err
 	}
 
 	if err = p.SendPEMWriter(request); err != nil {
-		return fmt.Errorf("Failed to send csr: %s", err.Error())
+		return err
 	}
 
 	return nil
@@ -194,12 +193,12 @@ func (p *RawProtocol) SendSigningRequest(request *security.Request) error {
 func (p *RawProtocol) HandleSigningRequest() (*security.Request, error) {
 	pemRequest, err := p.ReadString()
 	if err != nil {
-		return nil, fmt.Errorf("Failed to read pem encoded signing request: %s", err)
+		return nil, err
 	}
 
 	request, err := security.RequestFromPEM([]byte(pemRequest))
 	if err != nil {
-		return nil, fmt.Errorf("Failed to load pem encoded signing request: %s", err)
+		return nil, err
 	}
 
 	return request, nil
@@ -212,7 +211,7 @@ func (p *RawProtocol) SendCertificate(cert *security.Certificate) error {
 	)
 
 	if err = p.SendPEMWriter(cert); err != nil {
-		return fmt.Errorf("Failed to send crt: %s", err.Error())
+		return err
 	}
 
 	return nil
@@ -224,16 +223,12 @@ func (p *RawProtocol) HandleCertificate() (*security.Certificate, error) {
 
 	pemCert, err := p.ReadString()
 	if err != nil {
-		return nil, fmt.Errorf("Failed to read pem encoded certificate: %s", err.Error())
+		return nil, err
 	}
 
 	cert, err := security.CertificateFromPEM([]byte(pemCert))
 	if err != nil {
-		return nil, fmt.Errorf("Failed to load pem encoded certificate: %s", err.Error())
-	}
-
-	if err = p.WriteStringWithDeadline(Ack); err != nil {
-		return nil, errors.New("Failed to ack certificate")
+		return nil, err
 	}
 
 	return cert, nil

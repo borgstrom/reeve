@@ -37,6 +37,7 @@ const (
 	keyName = "reeve-agent.key"
 	csrName = "reeve-agent.csr"
 	crtName = "reeve-agent.crt"
+	caName  = "reeve-ca.crt"
 )
 
 type Agent struct {
@@ -114,6 +115,17 @@ func (a *Agent) Run() {
 			if err != nil {
 				logger.WithError(err).Fatal("Failed to read authority certificate")
 			}
+
+			// Store the new certificates in local files
+			crtFile := path.Join(config.KEYDIR, crtName)
+			if err = createPEM(crtFile, a.identity.Certificate); err != nil {
+				logger.WithError(err).Fatal("Failed to save signed certificate!")
+			}
+
+			caFile := path.Join(config.KEYDIR, caName)
+			if err = createPEM(caFile, a.authorityCertificate); err != nil {
+				logger.WithError(err).Fatal("Failed to save ca certificate!")
+			}
 		}
 	}
 
@@ -156,16 +168,9 @@ func (a *Agent) prepareIdentity() {
 		}
 
 		// And save it
-		f, err := os.Create(keyFile)
-		if err != nil {
+		if err = createPEM(keyFile, a.identity.Key); err != nil {
 			log.WithError(err).WithFields(log.Fields{"key": keyFile}).Fatal("Failed to open key for writing")
 		}
-
-		// Write it
-		a.identity.Key.WritePEM(f)
-
-		// Set an appropriate mode
-		f.Chmod(0400)
 	}
 
 	crtFile := path.Join(config.KEYDIR, crtName)
@@ -197,18 +202,24 @@ func (a *Agent) prepareIdentity() {
 		}
 
 		// And save it
-		f, err := os.Create(csrFile)
-		if err != nil {
+		if err = createPEM(csrFile, a.identity.Request); err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
 				"key":   csrFile,
-			}).Fatal("Failed to open csr for writing")
+			}).Fatal("Failed to save request")
 		}
-
-		// Set an appropriate mode
-		f.Chmod(0400)
-
-		// Write it
-		a.identity.Request.WritePEM(f)
 	}
+}
+
+// createPEM takes a file name and a pem writer, creates a file and writes the pem bytes out
+func createPEM(pemFile string, writer security.PEMWriter) error {
+	f, err := os.Create(pemFile)
+	if err != nil {
+		return err
+	}
+
+	writer.WritePEM(f)
+	f.Chmod(0400)
+
+	return nil
 }

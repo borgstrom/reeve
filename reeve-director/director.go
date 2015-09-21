@@ -220,6 +220,7 @@ func (d *Director) HandleConnection(connection *protocol.ServerConnection) {
 				identity = security.NewIdentity(request.Subject.CommonName)
 				identity.Request = request
 				d.state.StoreIdentity(identity)
+				d.state.AddIdentityToPending(identity)
 
 				if err = connection.Proto.Ack(); err != nil {
 					logger.WithError(err).Error("Failed to ack signing request")

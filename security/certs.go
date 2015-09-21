@@ -23,7 +23,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"io"
 )
 
@@ -38,12 +37,12 @@ type Certificate struct {
 func CertificateFromTemplate(template *x509.Certificate, parent *x509.Certificate, publicKey interface{}, privateKey *Key) (*Certificate, error) {
 	derBytes, err := x509.CreateCertificate(rand.Reader, template, parent, publicKey, privateKey.PrivateKey)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to create certificate: %s", err.Error())
+		return nil, err
 	}
 
 	cert, err := x509.ParseCertificate(derBytes)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse certificate: %s", err.Error())
+		return nil, err
 	}
 
 	return &Certificate{cert}, nil
@@ -59,7 +58,7 @@ func CertificateFromPEM(pemCert []byte) (*Certificate, error) {
 
 	cert, err := x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse certificate: %s", err.Error())
+		return nil, err
 	}
 
 	return &Certificate{cert}, nil
@@ -72,7 +71,7 @@ func (c *Certificate) WritePEM(buf io.Writer) error {
 		Bytes: c.Raw,
 	})
 	if err != nil {
-		return fmt.Errorf("Failed to PEM encode certificate: %s", err.Error())
+		return err
 	}
 
 	return nil

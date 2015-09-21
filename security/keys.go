@@ -27,7 +27,6 @@ import (
 	"encoding/asn1"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"io"
 	"math/big"
 )
@@ -42,7 +41,7 @@ func NewKey() (*Key, error) {
 	// TODO: the key size should probably be configurable
 	priv, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to generate the private key: %s", err)
+		return nil, err
 	}
 
 	return &Key{priv}, nil
@@ -57,7 +56,7 @@ func KeyFromPEM(pemKey []byte) (*Key, error) {
 
 	priv, err := x509.ParseECPrivateKey(keyBlock.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse key: %s", err.Error())
+		return nil, err
 	}
 
 	return &Key{priv}, nil
@@ -67,7 +66,7 @@ func KeyFromPEM(pemKey []byte) (*Key, error) {
 func (k *Key) WritePEM(buf io.Writer) error {
 	bytes, err := x509.MarshalECPrivateKey(k.PrivateKey)
 	if err != nil {
-		return fmt.Errorf("Failed to marshal private key: %s", err.Error())
+		return err
 	}
 
 	err = pem.Encode(buf, &pem.Block{
@@ -75,7 +74,7 @@ func (k *Key) WritePEM(buf io.Writer) error {
 		Bytes: bytes,
 	})
 	if err != nil {
-		return fmt.Errorf("Failed to PEM encode key: %s", err.Error())
+		return err
 	}
 
 	return nil

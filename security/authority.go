@@ -21,7 +21,6 @@ package security
 import (
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"fmt"
 	"math/big"
 	"time"
 )
@@ -42,7 +41,7 @@ func NewAuthority(key *Key) (*Authority, error) {
 
 	subjectKeyId, err := key.GenerateSubjectKeyId()
 	if err != nil {
-		return nil, fmt.Errorf("Failed to generate SubjectKeyId: %s", err)
+		return nil, err
 	}
 
 	template := &x509.Certificate{
@@ -74,7 +73,7 @@ func NewAuthority(key *Key) (*Authority, error) {
 
 	cert, err := CertificateFromTemplate(template, template, key.Public(), key)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to create the certificate: %s", err.Error())
+		return nil, err
 	}
 
 	a.Certificate = cert
@@ -90,7 +89,7 @@ func NewAuthority(key *Key) (*Authority, error) {
 func (a *Authority) Sign(request *Request) (*Certificate, error) {
 	subjectKeyId, err := a.Key.GenerateSubjectKeyId()
 	if err != nil {
-		return nil, fmt.Errorf("Failed to generate SubjectKeyId: %s", err)
+		return nil, err
 	}
 
 	template := &x509.Certificate{
@@ -117,7 +116,7 @@ func (a *Authority) Sign(request *Request) (*Certificate, error) {
 
 	c, err := CertificateFromTemplate(template, a.Certificate.Certificate, request.PublicKey, a.Key)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to generate signed certificate: %s", err.Error())
+		return nil, err
 	}
 
 	// Increment the serial number

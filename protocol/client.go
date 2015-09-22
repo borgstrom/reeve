@@ -19,7 +19,9 @@ limitations under the License.
 package protocol
 
 import (
+	"fmt"
 	"net"
+	"strings"
 )
 
 type Client struct {
@@ -28,7 +30,7 @@ type Client struct {
 	Proto    *RawProtocol
 }
 
-// Creates a new Client and dials the director
+// Creates a new Client and dials the director.  Director should be in the form <host>:<port>
 func NewClient(director string) *Client {
 	c := new(Client)
 
@@ -39,13 +41,24 @@ func NewClient(director string) *Client {
 
 // Connect sets up the connection to the director
 func (c *Client) Connect() error {
-	conn, err := net.Dial("tcp", c.Director)
+	var err error
+
+	// Split our director address at the port as we need just the name
+	hostParts := strings.Split(c.Director, ":")
+	if len(hostParts) != 2 {
+		return fmt.Errorf("Invalid director address: %s", c.Director)
+	}
+
+	c.Conn, err = net.Dial("tcp", c.Director)
 	if err != nil {
 		return err
 	}
 
-	c.Conn = conn
+	// Wrap the connection in our protocol
 	c.Proto = NewRawProtocol(c.Conn)
+
+	// Set the server name that we'll use during TLS verification
+	c.Proto.SetServerName(hostParts[0])
 
 	return nil
 }

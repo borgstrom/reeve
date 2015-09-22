@@ -150,5 +150,13 @@ event id\x00payload\x00
 
 Releases will be named after condiments. (First version to be ketchup)
 
+Helpful resources
+-----------------
+
+* https://gist.github.com/artyom/6897140
+* http://stackoverflow.com/questions/13110713/upgrade-a-connection-to-tls-in-go
+* https://github.com/coreos/etcd-ca
+
+
 
 [//]: # vim: set ft=markdown tw=100 wrap spell :

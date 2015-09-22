@@ -55,7 +55,8 @@ type RawProtocol struct {
 	conn   net.Conn
 	reader *bufio.Reader
 
-	deadline int
+	deadline   int
+	serverName string
 }
 
 // NewRawProtocol creates a new RawProtocol instance based on a net.Conn
@@ -67,11 +68,17 @@ func NewRawProtocol(conn net.Conn) *RawProtocol {
 	// TODO: make this deadline configurable
 	p.deadline = 500
 
+	p.serverName = "reeve-director"
+
 	return p
 }
 
 func (p *RawProtocol) setupBuffers() {
 	p.reader = bufio.NewReader(p.conn)
+}
+
+func (p *RawProtocol) SetServerName(serverName string) {
+	p.serverName = serverName
 }
 
 // WriteString writes the string value in s followed by a null byte
@@ -170,7 +177,7 @@ func (p *RawProtocol) StartTLS(identity *security.Identity, caCertificate *secur
 
 	// Build the config
 	config := new(tls.Config)
-	config.ServerName = "dir"
+	config.ServerName = p.serverName
 
 	// Setup the tls connection
 	if err = p.tlsSetup(config, identity, caCertificate); err != nil {

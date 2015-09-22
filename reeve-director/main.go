@@ -19,22 +19,34 @@ package main
 import (
 	"runtime"
 
-	log "github.com/Sirupsen/logrus"
+	"github.com/spf13/cobra"
 
 	"github.com/borgstrom/reeve/reeve-director/config"
-	"github.com/borgstrom/reeve/version"
 )
+
+var MainCommand = &cobra.Command{
+	Use:              "reeve-director",
+	Short:            "Direct and control agents",
+	PersistentPreRun: config.PreRun,
+}
+
+var RunCommand = &cobra.Command{
+	Use:   "run",
+	Short: "Run the director",
+
+	Run: func(cmd *cobra.Command, args []string) {
+		NewDirector().Run()
+	},
+}
 
 func init() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	config.Init(MainCommand)
+
+	MainCommand.AddCommand(RunCommand)
 }
 
 func main() {
-	log.WithFields(log.Fields{
-		"id":      config.ID,
-		"version": version.Version,
-		"git":     version.GitSHA,
-	}).Print("reeve-director starting")
-
-	NewDirector().Run()
+	MainCommand.Execute()
 }

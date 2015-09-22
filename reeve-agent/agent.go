@@ -22,15 +22,18 @@ import (
 	"io/ioutil"
 	"os"
 	"os/signal"
-	"path"
 	"syscall"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
 
+	"github.com/spf13/viper"
+
 	"github.com/borgstrom/reeve/protocol"
 	"github.com/borgstrom/reeve/reeve-agent/config"
+	"github.com/borgstrom/reeve/rpc"
 	"github.com/borgstrom/reeve/security"
+	"github.com/borgstrom/reeve/version"
 )
 
 const (
@@ -57,6 +60,12 @@ func (a *Agent) Run() {
 		err error
 	)
 
+	log.WithFields(log.Fields{
+		"id":      config.ID(),
+		"version": version.Version,
+		"git":     version.GitSHA,
+	}).Print("reeve-agent starting")
+
 	// Get our Identity ready
 	a.prepareIdentity()
 
@@ -69,12 +78,12 @@ func (a *Agent) Run() {
 	}
 
 	logger := log.WithFields(log.Fields{
-		"director": config.DIRECTOR,
+		"director": viper.GetString("director"),
 	})
 
 	// Connect to the director
 	logger.Info("Connecting to director")
-	a.client = protocol.NewClient(config.DIRECTOR)
+	a.client = protocol.NewClient(viper.GetString("director"))
 	if err = a.client.Connect(); err != nil {
 		log.WithError(err).Fatal("Failed to connect to the director")
 	}
@@ -117,12 +126,12 @@ func (a *Agent) Run() {
 			}
 
 			// Store the new certificates in local files
-			crtFile := path.Join(config.KEYDIR, crtName)
+			crtFile := config.Path("state", "agent.crt")
 			if err = createPEM(crtFile, a.identity.Certificate); err != nil {
 				logger.WithError(err).Fatal("Failed to save signed certificate!")
 			}
 
-			caFile := path.Join(config.KEYDIR, caName)
+			caFile := config.Path("state", "authority.crt")
 			if err = createPEM(caFile, a.authorityCertificate); err != nil {
 				logger.WithError(err).Fatal("Failed to save ca certificate!")
 			}
@@ -147,6 +156,16 @@ func (a *Agent) Run() {
 
 	logger.Info("TLS connection established")
 
+	rpcClient := rpc.NewClient(a.client.Conn)
+	reply := new(rpc.Reply)
+	request := new(rpc.Request)
+	err = rpcClient.Call("Test.Ping", &request, &reply)
+	if err != nil {
+		logger.WithError(err).Fatal("Ping failed")
+	}
+
+	logger.Info(reply.Data)
+
 	// block until interrupted
 	cleanupChannel := make(chan os.Signal, 1)
 	signal.Notify(cleanupChannel, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)
@@ -160,13 +179,13 @@ func (a *Agent) prepareIdentity() {
 		fileBytes []byte
 	)
 
-	a.identity = security.NewIdentity(config.ID)
+	a.identity = security.NewIdentity(config.ID())
 
 	log.WithFields(log.Fields{
-		"keydir": config.KEYDIR,
-	}).Debug("Loading identity keys")
+		"state": config.Path("state"),
+	}).Debug("Loading identity")
 
-	caFile := path.Join(config.KEYDIR, caName)
+	caFile := config.Path("state", "authority.crt")
 	_, err = os.Stat(caFile)
 	if err == nil {
 		// The ca exists, load it
@@ -177,15 +196,13 @@ func (a *Agent) prepareIdentity() {
 		}
 	}
 
-	keyFile := path.Join(config.KEYDIR, keyName)
+	keyFile := config.Path("state", "agent.key")
 	_, err = os.Stat(keyFile)
 	if err == nil {
 		// The key exists, load it
 		fileBytes, err = ioutil.ReadFile(keyFile)
 		if err = a.identity.LoadKey(fileBytes); err != nil {
-			log.WithFields(log.Fields{
-				"error": err,
-			}).Fatal("Failed to load private key")
+			log.WithError(err).Fatal("Failed to load private key")
 		}
 	} else {
 		// Create a new one
@@ -199,7 +216,7 @@ func (a *Agent) prepareIdentity() {
 		}
 	}
 
-	crtFile := path.Join(config.KEYDIR, crtName)
+	crtFile := config.Path("state", "agent.crt")
 	_, err = os.Stat(crtFile)
 	if err == nil {
 		// The certificate exists, load it
@@ -213,7 +230,7 @@ func (a *Agent) prepareIdentity() {
 	}
 
 	// See if we have an existing csr
-	csrFile := path.Join(config.KEYDIR, csrName)
+	csrFile := config.Path("state", "agent.csr")
 	_, err = os.Stat(csrFile)
 	if err == nil {
 		// The request exists, load it
@@ -231,7 +248,7 @@ func (a *Agent) prepareIdentity() {
 		if err = createPEM(csrFile, a.identity.Request); err != nil {
 			log.WithFields(log.Fields{
 				"error": err,
-				"key":   csrFile,
+				"file":  csrFile,
 			}).Fatal("Failed to save request")
 		}
 	}

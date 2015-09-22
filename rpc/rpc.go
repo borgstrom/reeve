@@ -1,5 +1,5 @@
 /*
- Reeve identity - entry point
+ Reeve - RPC
 
  Copyright 2015 Evan Borgstrom
 
@@ -16,24 +16,43 @@
  limitations under the License.
 */
 
-package main
+package rpc
 
 import (
-	"github.com/spf13/cobra"
+	"net/rpc"
 
-	"github.com/borgstrom/reeve/reeve-director/config"
+	log "github.com/Sirupsen/logrus"
 )
 
-var MainCommand = &cobra.Command{
-	Use:              "reeve-identity",
-	Short:            "Manage security identities (keys & certificates)",
-	PersistentPreRun: config.PreRun,
+// As we take the rpc namespace we shim through some functions
+var (
+	NewClient = rpc.NewClient
+	Register  = rpc.Register
+	ServeConn = rpc.ServeConn
+)
+
+type Request struct {
+}
+
+type Reply struct {
+	Ok   bool
+	Data interface{}
+}
+
+type Test struct {
+}
+
+func (t *Test) Ping(request *Request, reply *Reply) error {
+	log.Debug("Ping! Pong!")
+	reply.Ok = true
+	reply.Data = "Pong"
+	return nil
 }
 
 func init() {
-	config.Init(MainCommand)
-}
+	var err error
 
-func main() {
-	MainCommand.Execute()
+	if err = rpc.Register(new(Test)); err != nil {
+		log.WithError(err).Fatal("Failed to register Test RPC")
+	}
 }

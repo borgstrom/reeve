@@ -21,22 +21,34 @@ package main
 import (
 	"runtime"
 
-	log "github.com/Sirupsen/logrus"
+	"github.com/spf13/cobra"
 
 	"github.com/borgstrom/reeve/reeve-agent/config"
-	"github.com/borgstrom/reeve/version"
 )
+
+var MainCommand = &cobra.Command{
+	Use:              "reeve-agent",
+	Short:            "Provide access to the local system via a director",
+	PersistentPreRun: config.PreRun,
+}
+
+var RunCommand = &cobra.Command{
+	Use:   "run",
+	Short: "Run the agent",
+
+	Run: func(cmd *cobra.Command, args []string) {
+		NewAgent().Run()
+	},
+}
 
 func init() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
+
+	config.Init(MainCommand)
+
+	MainCommand.AddCommand(RunCommand)
 }
 
 func main() {
-	log.WithFields(log.Fields{
-		"id":      config.ID,
-		"version": version.Version,
-		"git":     version.GitSHA,
-	}).Print("reeve-agent starting")
-
-	NewAgent().Run()
+	MainCommand.Execute()
 }

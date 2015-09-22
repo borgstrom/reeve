@@ -25,11 +25,14 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 
+	"github.com/spf13/viper"
+
 	"github.com/borgstrom/reeve/protocol"
+	"github.com/borgstrom/reeve/reeve-director/config"
+	"github.com/borgstrom/reeve/rpc"
 	"github.com/borgstrom/reeve/security"
 	"github.com/borgstrom/reeve/state"
-
-	"github.com/borgstrom/reeve/reeve-director/config"
+	"github.com/borgstrom/reeve/version"
 )
 
 const (
@@ -85,8 +88,14 @@ func (d *Director) createIdentity(name string) (*security.Identity, error) {
 func (d *Director) Run() {
 	var err error
 
+	log.WithFields(log.Fields{
+		"id":      config.ID(),
+		"version": version.Version,
+		"git":     version.GitSHA,
+	}).Print("reeve-director starting")
+
 	// Create our state
-	d.state = state.NewState(config.ETCD_HOSTS)
+	d.state = state.NewState(viper.GetStringSlice("etc.hosts"))
 
 	// get our authority
 	log.Info("Loading authority")
@@ -101,12 +110,12 @@ func (d *Director) Run() {
 
 	// load our identity
 	log.Info("Loading identity")
-	d.identity, err = d.state.LoadIdentity(config.ID)
+	d.identity, err = d.state.LoadIdentity(config.ID())
 	if err != nil {
 		log.WithError(err).Fatal("Failed to load our own identity!")
 	}
 	if d.identity == nil {
-		d.identity, err = d.createIdentity(config.ID)
+		d.identity, err = d.createIdentity(config.ID())
 		if err != nil {
 			log.WithError(err).Fatal("Failed to create our own identity!")
 		}
@@ -132,14 +141,14 @@ func (d *Director) Run() {
 			d.HandleDirectorEvent(event)
 		}
 	}()
-	go d.state.DiscoverDirectors(config.ID, directors)
+	go d.state.DiscoverDirectors(config.ID(), directors)
 
 	// register as a director
-	go d.state.DirectorHeartbeat(config.ID, heartbeatInterval)
+	go d.state.DirectorHeartbeat(config.ID(), heartbeatInterval)
 
 	// Setup the server
 	connections := make(chan *protocol.ServerConnection)
-	d.server = protocol.NewServer(config.HOST, config.PORT)
+	d.server = protocol.NewServer(viper.GetString("host"), viper.GetInt("port"))
 	go func() {
 		for connection := range connections {
 			go d.HandleConnection(connection)
@@ -266,13 +275,15 @@ func (d *Director) HandleConnection(connection *protocol.ServerConnection) {
 	}
 
 	// Get ready to switch to TLS mode and start RPC & Event Bus
-	logger.Debug("Upgrading connection to TLS")
+	logger.Info("Upgrading connection to TLS")
 	if err = connection.Proto.HandleStartTLS(d.identity, d.authority.Certificate); err != nil {
 		logger.WithError(err).Error("Failed up handle Start TLS")
 		return
 	}
 
 	logger.Debug("Upgraded")
+	logger.Info("Serving RPC")
+	rpc.ServeConn(connection.Conn)
 }
 
 func (d *Director) HandleDirectorEvent(event *state.DirectorEvent) {

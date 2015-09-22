@@ -1,4 +1,4 @@
-// Reeve director config
+// Reeve director default config
 //
 // Copyright 2015 Evan Borgstrom
 //
@@ -16,58 +16,91 @@
 
 package config
 
+/*
+XXX TODO
+
+It would be good to have a literal YAML block defined here that makes up the defaults.
+This would allow us to produce a default file trivially.
+*/
+
 import (
-	"flag"
-	"fmt"
 	"os"
 
 	log "github.com/Sirupsen/logrus"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+
 	"github.com/borgstrom/reeve/version"
 )
 
-// StringMap
-type StringMap []string
-
-func (i *StringMap) String() string {
-	return fmt.Sprint(*i)
-}
-
-func (i *StringMap) Set(value string) error {
-	*i = append(*i, value)
-	return nil
-}
-
 var (
-	DEBUG      bool
-	ETCD_HOSTS StringMap = []string{"http://127.0.0.1:2379"}
-	ID         string
-	PORT       int
-	HOST       string
+	ConfigFile string
+	Debug      bool
 )
 
-func init() {
+func PreRun(cmd *cobra.Command, args []string) {
+	if Debug {
+		log.SetLevel(log.DebugLevel)
+	}
+
+	InitConfig(ConfigFile)
+}
+
+func Init(cmd *cobra.Command) {
+	cmd.AddCommand(version.VersionCommand)
+
+	cmd.PersistentFlags().StringVarP(&ConfigFile, "config", "c", "", "Specify an explicit config file, defaults to the director config")
+	cmd.PersistentFlags().BoolVarP(&Debug, "debug", "d", false, "Copious output")
+}
+
+func InitConfig(configFile string) {
+	SetDefaults()
+
+	if configFile != "" {
+		if _, err := os.Stat(configFile); os.IsNotExist(err) {
+			log.WithFields(log.Fields{"file": configFile}).Fatal("Config file does not exist")
+		}
+
+		// Load the config file if supplied
+		viper.SetConfigFile(configFile)
+	} else {
+		// Otherwise use the defaults
+		viper.SetConfigName("director")
+		viper.AddConfigPath("/etc/reeve")
+		viper.AddConfigPath("$HOME/.reeve")
+	}
+
+	err := viper.ReadInConfig()
+	if err != nil {
+		// Check if we got an unsupported config error
+		// If so it means that no files were found, and we can just skip it using our defaults
+		_, ok := err.(viper.UnsupportedConfigError)
+		if !ok {
+			log.WithError(err).Fatal("Could not read config")
+		}
+
+		log.Debug("No config file available, using all defaults")
+	}
+}
+
+func SetDefaults() {
 	hostname, err := os.Hostname()
 	if err != nil {
 		hostname = "reeve"
 	}
 
-	flag.BoolVar(&DEBUG, "debug", false, "Produce copius output")
-	flag.Var(&ETCD_HOSTS, "etcd", "Address(es) of etcd instances, can be specified multiple times")
-	flag.StringVar(&ID, "id", hostname, "ID of this node")
-	flag.StringVar(&HOST, "host", "", "The address to bind to")
-	flag.IntVar(&PORT, "port", 4195, "The port to listen on")
+	viper.SetDefault("id", hostname)
 
-	var showVersion = flag.Bool("version", false, "Show the current version")
+	viper.SetDefault("host", "")
+	viper.SetDefault("port", 4195)
 
-	flag.Parse()
+	viper.SetDefault("etc", map[string]interface{}{
+		"hosts": []string{"http://127.0.0.1:2379"},
+	})
+}
 
-	if DEBUG == true {
-		log.SetLevel(log.DebugLevel)
-	}
-
-	if *showVersion == true {
-		fmt.Printf(version.Version)
-		os.Exit(0)
-	}
+// Frequently used setting
+func ID() string {
+	return viper.GetString("id")
 }

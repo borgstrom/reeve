@@ -225,6 +225,16 @@ func (s *State) StoreIdentity(identity *security.Identity) error {
 	return nil
 }
 
+// Remove an identity from the state
+func (s *State) RemoveIdentity(identity *security.Identity) error {
+	_, err := s.etc.Delete(etcPath(etcIdentitiesPrefix, identity.Id), true)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // AddIdentityToPending adds the provided identity to the pending list
 func (s *State) AddIdentityToPending(identity *security.Identity) error {
 	_, err := s.etc.Set(etcPath(etcPendingIdentitiesPrefix, identity.Id), "1", 0)

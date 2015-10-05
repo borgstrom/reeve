@@ -17,6 +17,7 @@
 package security
 
 import (
+	"crypto/sha1"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
@@ -43,6 +44,11 @@ func NewIdentity(id string) *Identity {
 	i.Id = id
 
 	return i
+}
+
+// Returns the fingerprint (SHA1 byte array) of the certificate
+func (i *Identity) Fingerprint() [sha1.Size]byte {
+	return sha1.Sum(i.Certificate.Raw)
 }
 
 // IsValid returns true if the Identity has a cert or csr

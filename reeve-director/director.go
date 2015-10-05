@@ -19,11 +19,14 @@ limitations under the License.
 package main
 
 import (
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
 	log "github.com/Sirupsen/logrus"
+
+	"github.com/asaskevich/EventBus"
 
 	"github.com/spf13/viper"
 
@@ -39,11 +42,28 @@ const (
 	heartbeatInterval = 10
 )
 
+// Director holds all of the state
 type Director struct {
-	state     *state.State
-	server    *protocol.Server
-	identity  *security.Identity
-	authority *security.Authority
+	state       *state.State
+	agentServer *protocol.Server
+	eventServer *protocol.Server
+	identity    *security.Identity
+	authority   *security.Authority
+	bus         *EventBus.EventBus
+	agents      map[string]*Agent
+}
+
+// AgentRequest encapsulates a request and reply and is what is used when executing RPC on an Agent
+type AgentRequest struct {
+	request *rpc.Request
+	reply   *rpc.Reply
+}
+
+// Agent holds
+type Agent struct {
+	id       string
+	requests chan *AgentRequest
+	identity *security.Identity
 }
 
 func NewDirector() *Director {
@@ -133,6 +153,9 @@ func (d *Director) Run() {
 		d.state.StoreIdentity(d.identity)
 	}
 
+	// Setup the event bus
+	d.bus = EventBus.New()
+
 	// find other directors
 	directors := make(chan *state.DirectorEvent)
 	go func() {
@@ -146,15 +169,12 @@ func (d *Director) Run() {
 	// register as a director
 	go d.state.DirectorHeartbeat(config.ID(), heartbeatInterval)
 
-	// Setup the server
-	connections := make(chan *protocol.ServerConnection)
-	d.server = protocol.NewServer(viper.GetString("host"), viper.GetInt("port"))
-	go func() {
-		for connection := range connections {
-			go d.HandleConnection(connection)
-		}
-	}()
-	go d.server.Listen(connections)
+	// Setup the servers
+	d.agentServer = protocol.NewServer(viper.GetString("host"), viper.GetInt("port"))
+	go d.agentServer.Listen(d.HandleAgentConnection)
+
+	d.eventServer = protocol.NewServer(viper.GetString("host"), viper.GetInt("port")+1)
+	go d.eventServer.Listen(d.HandleEventBusConnection)
 
 	// block until interrupted
 	cleanupChannel := make(chan os.Signal, 1)
@@ -162,22 +182,66 @@ func (d *Director) Run() {
 	<-cleanupChannel
 }
 
-func (d *Director) HandleConnection(connection *protocol.ServerConnection) {
+func (d *Director) HandleEventBusConnection(conn net.Conn) {
 	var (
-		err      error
-		cmd      string
-		startTLS bool
+		err error
+		cmd byte
 	)
-	defer connection.Conn.Close()
+	defer conn.Close()
 
 	// setup a base logger so all messages include our address
 	logger := log.WithFields(log.Fields{
-		"address": connection.Conn.RemoteAddr().String(),
+		"address": conn.RemoteAddr().String(),
+		"type":    "event",
 	})
+
+	logger.Debug("New event bus connection")
+
+	proto := protocol.NewProtocol(conn)
+
+	// Read our command
+	cmd, err = proto.ReadByte()
+	if err != nil {
+		logger.WithError(err).Error("Failed to read command when setting up event bus")
+		return
+	}
+
+	if cmd != protocol.TLS {
+		logger.Error("Invalid command when setting up event bus")
+		return
+	}
+
+	if err = proto.HandleStartTLS(d.identity, d.authority.Certificate); err != nil {
+		logger.WithError(err).Error("Failed up handle Start TLS for event bus")
+		return
+	}
+
+	logger.Debug("Event bus established!")
+
+	// Block until we're done
+	done := make(chan int)
+	<-done
+}
+
+func (d *Director) HandleAgentConnection(conn net.Conn) {
+	var (
+		err      error
+		cmd      byte
+		startTLS bool
+	)
+	defer conn.Close()
+
+	// setup a base logger so all messages include our address
+	logger := log.WithFields(log.Fields{
+		"address": conn.RemoteAddr().String(),
+		"type":    "agent",
+	})
+
+	proto := protocol.NewProtocol(conn)
 
 	// Announce the protocol
 	logger.Debug("Announcing protocol")
-	if err = connection.Proto.Announce(); err != nil {
+	if err = proto.Announce(); err != nil {
 		log.WithError(err).Error("Protocol announcement failed")
 		return
 	}
@@ -186,21 +250,16 @@ func (d *Director) HandleConnection(connection *protocol.ServerConnection) {
 	logger.Debug("Beginning TLS setup")
 	startTLS = false
 	for !startTLS {
-		// Read our command
-		cmd, err = connection.Proto.ReadString()
+		cmd, err = proto.ReadByte()
 		if err != nil {
-			logger.WithError(err).Error("TLS setup failed")
+			logger.WithError(err).Error("Failed to read protocol command")
 			return
 		}
-
-		logger.WithFields(log.Fields{
-			"cmd": cmd,
-		}).Debug("Handling new command")
 
 		switch cmd {
 		case protocol.SigningRequest:
 			logger.Debug("Reading signing request")
-			request, err := connection.Proto.HandleSigningRequest()
+			request, err := proto.HandleSigningRequest()
 			if err != nil {
 				logger.WithError(err).Error("Failed to read signing request")
 				return
@@ -231,7 +290,7 @@ func (d *Director) HandleConnection(connection *protocol.ServerConnection) {
 				d.state.StoreIdentity(identity)
 				d.state.AddIdentityToPending(identity)
 
-				if err = connection.Proto.Ack(); err != nil {
+				if err = proto.Ack(); err != nil {
 					logger.WithError(err).Error("Failed to ack signing request")
 					return
 				}
@@ -242,15 +301,15 @@ func (d *Director) HandleConnection(connection *protocol.ServerConnection) {
 						"name": request.Subject.CommonName,
 					}).Debug("Sending signed certificate")
 
-					if err = connection.Proto.Resp(); err != nil {
+					if err = proto.Resp(); err != nil {
 						logger.WithError(err).Error("Failed to signal response")
 						return
 					}
 
-					connection.Proto.SendCertificate(identity.Certificate)
-					connection.Proto.SendCertificate(d.authority.Certificate)
+					proto.SendCertificate(identity.Certificate)
+					proto.SendCertificate(d.authority.Certificate)
 				} else {
-					if err = connection.Proto.Ack(); err != nil {
+					if err = proto.Ack(); err != nil {
 						logger.WithError(err).Error("Failed to ack signing request")
 						return
 					}
@@ -262,8 +321,13 @@ func (d *Director) HandleConnection(connection *protocol.ServerConnection) {
 			}
 
 		case protocol.TLS:
-			// Mark that we're now ready to start TLS
-			// The actual connection upgrade will happen out of the for loop
+			logger.Info("Upgrading connection to TLS")
+			if err = proto.HandleStartTLS(d.identity, d.authority.Certificate); err != nil {
+				logger.WithError(err).Error("Failed up handle Start TLS")
+				return
+			}
+			logger.Debug("Upgraded!")
+
 			startTLS = true
 
 		default:
@@ -274,16 +338,24 @@ func (d *Director) HandleConnection(connection *protocol.ServerConnection) {
 		}
 	}
 
-	// Get ready to switch to TLS mode and start RPC & Event Bus
-	logger.Info("Upgrading connection to TLS")
-	if err = connection.Proto.HandleStartTLS(d.identity, d.authority.Certificate); err != nil {
-		logger.WithError(err).Error("Failed up handle Start TLS")
+	// The connection is now upgraded to TLS
+	// Handle RPC to the agent
+
+	rpcClient := rpc.NewClient(conn)
+	// Now we get our client ready and range over our channel of commands to send to the client
+	reply := new(rpc.Reply)
+	request := new(rpc.Request)
+	err = rpcClient.Call("Test.Ping", &request, &reply)
+	if err != nil {
+		logger.WithError(err).Error("Ping failed")
 		return
 	}
 
-	logger.Debug("Upgraded")
-	logger.Info("Serving RPC")
-	rpc.ServeConn(connection.Conn)
+	logger.Info(reply.Data)
+
+	// Block until we're done
+	done := make(chan int)
+	<-done
 }
 
 func (d *Director) HandleDirectorEvent(event *state.DirectorEvent) {

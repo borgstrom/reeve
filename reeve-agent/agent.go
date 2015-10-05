@@ -31,7 +31,6 @@ import (
 
 	"github.com/borgstrom/reeve/protocol"
 	"github.com/borgstrom/reeve/reeve-agent/config"
-	"github.com/borgstrom/reeve/rpc"
 	"github.com/borgstrom/reeve/security"
 	"github.com/borgstrom/reeve/version"
 )
@@ -45,8 +44,11 @@ const (
 
 type Agent struct {
 	identity             *security.Identity
-	client               *protocol.Client
+	agentClient          *protocol.Client
+	eventClient          *protocol.Client
 	authorityCertificate *security.Certificate
+
+	doneChannel chan int
 }
 
 func NewAgent() *Agent {
@@ -77,20 +79,25 @@ func (a *Agent) Run() {
 			"https://github.com/borgstrom/reeve/issues")
 	}
 
+	director := viper.GetString("director")
+	port := viper.GetInt("port")
+
 	logger := log.WithFields(log.Fields{
-		"director": viper.GetString("director"),
+		"director": director,
+		"port":     port,
 	})
 
 	// Connect to the director
 	logger.Info("Connecting to director")
-	a.client = protocol.NewClient(viper.GetString("director"))
-	if err = a.client.Connect(); err != nil {
+	a.agentClient = protocol.NewClient(director, port)
+	if err = a.agentClient.Connect(); err != nil {
 		log.WithError(err).Fatal("Failed to connect to the director")
 	}
 
-	//
+	proto := a.agentClient.NewProtocol()
+
 	logger.Debug("Verifying protocol")
-	if err = a.client.Proto.Validate(); err != nil {
+	if err = proto.Validate(); err != nil {
 		log.WithError(err).Fatal("Failed to validate the protocol")
 	}
 	logger.Debug("Protocol verified")
@@ -98,29 +105,28 @@ func (a *Agent) Run() {
 	// We need to get the director to sign our identity before we can do anything else
 	for !a.identity.IsSigned() {
 		logger.Debug("Sending signing request")
-		if err = a.client.Proto.SendSigningRequest(a.identity.Request); err != nil {
+		if err = proto.SendSigningRequest(a.identity.Request); err != nil {
 			logger.WithError(err).Fatal("Failed to send signing request to the director")
 		}
 
 		logger.Debug("Reading response")
-		resp, err := a.client.Proto.ReadStringWithDeadline()
+		cmd, err := proto.ReadByte()
 		if err != nil {
 			logger.WithError(err).Fatal("Failed to read response to csr")
 		}
-		logger.WithFields(log.Fields{"resp": resp}).Debug("Handling response")
 
-		if resp == protocol.Ack {
+		if cmd == protocol.Ack {
 			logger.Info("Waiting for our identity to be signed by the director...")
 			time.Sleep(15 * time.Second)
-		} else if resp == protocol.Response {
+		} else if cmd == protocol.Response {
 			logger.Info("Receiving signed certificate")
-			a.identity.Certificate, err = a.client.Proto.HandleCertificate()
+			a.identity.Certificate, err = proto.HandleCertificate()
 			if err != nil {
 				logger.WithError(err).Fatal("Failed to read signed certificate!")
 			}
 
 			logger.Info("Receving authority certificate")
-			a.authorityCertificate, err = a.client.Proto.HandleCertificate()
+			a.authorityCertificate, err = proto.HandleCertificate()
 			if err != nil {
 				logger.WithError(err).Fatal("Failed to read authority certificate")
 			}
@@ -140,36 +146,62 @@ func (a *Agent) Run() {
 
 	// Start TLS
 	logger.Info("Upgrading connection to TLS")
-	if err = a.client.Proto.StartTLS(a.identity, a.authorityCertificate); err != nil {
+	if err = proto.StartTLS(a.identity, a.authorityCertificate); err != nil {
 		logger.WithError(err).Fatal("Failed to start TLS")
 	}
 
 	// Read a string, this will happen over the now encrypted channel
-	resp, err := a.client.Proto.ReadString()
+	cmd, err := proto.ReadByte()
 	if err != nil {
 		logger.WithError(err).Fatal("Failed to ack TLS")
 	}
 
-	if resp != protocol.Ack {
-		logger.WithFields(log.Fields{"resp": resp}).Fatal("Failed to receive Ack in response to start TLS")
+	if cmd != protocol.Ack {
+		logger.Fatal("Failed to receive Ack in response to start TLS")
 	}
 
 	logger.Info("TLS connection established")
 
-	rpcClient := rpc.NewClient(a.client.Conn)
-	reply := new(rpc.Reply)
-	request := new(rpc.Request)
-	err = rpcClient.Call("Test.Ping", &request, &reply)
-	if err != nil {
-		logger.WithError(err).Fatal("Ping failed")
-	}
+	a.doneChannel = make(chan int)
 
-	logger.Info(reply.Data)
+	// Make the event bus connection
+	func() {
+		logger = logger.WithFields(log.Fields{"port": port + 1})
 
-	// block until interrupted
-	cleanupChannel := make(chan os.Signal, 1)
-	signal.Notify(cleanupChannel, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)
-	<-cleanupChannel
+		logger.Info("Connecting to the event bus")
+		a.eventClient = protocol.NewClient(director, port+1)
+		if err = a.eventClient.Connect(); err != nil {
+			log.WithError(err).Fatal("Failed to connect to the event bus")
+		}
+
+		// Start TLS
+		if err = a.eventClient.NewProtocol().StartTLS(a.identity, a.authorityCertificate); err != nil {
+			logger.WithError(err).Fatal("Failed to start event bus")
+		}
+
+		logger.Debug("Event bus established!")
+	}()
+
+	// Serve RPC
+	go func() {
+		logger.Info("Serving RPC")
+		a.agentClient.ServeRPC()
+		logger.Info("Client connection closed")
+		a.doneChannel <- 1
+	}()
+
+	// Signal handler
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)
+		sigReceived := <-sig
+		logger.WithFields(log.Fields{"signal": sigReceived}).Info("Received signal")
+		a.doneChannel <- 1
+	}()
+
+	// Block until we're done
+	<-a.doneChannel
+	logger.Info("Exiting")
 }
 
 // prepareIdentity loads or creates our identity

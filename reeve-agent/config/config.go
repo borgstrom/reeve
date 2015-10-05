@@ -88,7 +88,8 @@ func SetDefaults() {
 
 	viper.SetDefault("id", hostname)
 
-	viper.SetDefault("director", "reeve-director:4195")
+	viper.SetDefault("director", "reeve-director")
+	viper.SetDefault("port", 4195)
 	viper.SetDefault("state", "/var/lib/reeve") // TODO: this will need to change to support non-UNIX
 }
 

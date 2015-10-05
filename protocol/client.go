@@ -21,20 +21,25 @@ package protocol
 import (
 	"fmt"
 	"net"
-	"strings"
+
+	"github.com/borgstrom/reeve/rpc"
 )
 
 type Client struct {
-	Director string
-	Conn     net.Conn
-	Proto    *RawProtocol
+	director string
+	port     int
+	address  string
+
+	conn net.Conn
 }
 
 // Creates a new Client and dials the director.  Director should be in the form <host>:<port>
-func NewClient(director string) *Client {
+func NewClient(director string, port int) *Client {
 	c := new(Client)
 
-	c.Director = director
+	c.director = director
+	c.port = port
+	c.address = fmt.Sprintf("%s:%d", director, port)
 
 	return c
 }
@@ -43,22 +48,25 @@ func NewClient(director string) *Client {
 func (c *Client) Connect() error {
 	var err error
 
-	// Split our director address at the port as we need just the name
-	hostParts := strings.Split(c.Director, ":")
-	if len(hostParts) != 2 {
-		return fmt.Errorf("Invalid director address: %s", c.Director)
-	}
-
-	c.Conn, err = net.Dial("tcp", c.Director)
+	c.conn, err = net.Dial("tcp", c.address)
 	if err != nil {
 		return err
 	}
 
-	// Wrap the connection in our protocol
-	c.Proto = NewRawProtocol(c.Conn)
+	return nil
+}
+
+// NewProtocol returns a new Protocol object based on this client's connection
+func (c *Client) NewProtocol() *Protocol {
+	p := NewProtocol(c.conn)
 
 	// Set the server name that we'll use during TLS verification
-	c.Proto.SetServerName(hostParts[0])
+	p.SetServerName(c.director)
 
-	return nil
+	return p
+}
+
+// ServeRPC passes the connection of the client to the RPC framework
+func (c *Client) ServeRPC() {
+	rpc.ServeConn(c.conn)
 }

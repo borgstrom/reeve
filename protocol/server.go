@@ -25,20 +25,6 @@ import (
 	log "github.com/Sirupsen/logrus"
 )
 
-type ServerConnection struct {
-	Conn  net.Conn
-	Proto *RawProtocol
-}
-
-func NewServerConnection(conn net.Conn, proto *RawProtocol) *ServerConnection {
-	c := new(ServerConnection)
-
-	c.Conn = conn
-	c.Proto = proto
-
-	return c
-}
-
 type Server struct {
 	address string
 }
@@ -51,10 +37,10 @@ func NewServer(host string, port int) *Server {
 	return s
 }
 
-func (s *Server) Listen(connections chan<- *ServerConnection) {
+func (s *Server) Listen(handler func(net.Conn)) {
 	log.WithFields(log.Fields{
 		"address": s.address,
-	}).Print("Listening")
+	}).Debug("Listening")
 
 	listener, err := net.Listen("tcp", s.address)
 	if err != nil {
@@ -65,12 +51,20 @@ func (s *Server) Listen(connections chan<- *ServerConnection) {
 	}
 	defer listener.Close()
 
+	connections := make(chan net.Conn)
+
+	go func() {
+		for connection := range connections {
+			go handler(connection)
+		}
+	}()
+
 	for {
 		conn, _ := listener.Accept()
 		log.WithFields(log.Fields{
 			"address": conn.RemoteAddr().String(),
 		}).Debug("New connection")
 
-		connections <- NewServerConnection(conn, NewRawProtocol(conn))
+		connections <- conn
 	}
 }

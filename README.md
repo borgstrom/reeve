@@ -123,6 +123,17 @@ To ensure the event bus has been setup correctly the server will send an initial
 bus with a random number following connection.  The agent must call a verifier RPC with this number
 or the director will close both connections.
 
+### Command RPC
+
+The Command RPC implementation is served by agents to directors when they connect on the main port.
+It exposes all of the module functionality on that agent so that the director may invoke module
+functions.
+
+### Control RPC
+
+The Control RPC implementation is served by directors to agents after they connect on the main port
+plus 1.  It exposes the master event bus and agent management functions to the agent.
+
 ### Director to Director
 
 When directors connect to each other they also use port 4195.  There is no automatic certificate
@@ -136,19 +147,12 @@ TLS.
 -> dir
 ```
 
-### Event bus
-
-The event bus uses the null byte terminated string handling from the Raw Protocol, but is a
-simplistic fire hose of events and payloads.  For each event targeted to the agent it will receive:
-
-```
-event id\x00payload\x00
-```
 
 /dev/urandom
 ============
 
-Releases will be named after condiments. (First version to be ketchup)
+Releases will be named after condiments. First versions to be ketchup, dijon, and miso.
+Lots of ideas: https://en.wikipedia.org/wiki/List_of_condiments
 
 Helpful resources
 -----------------

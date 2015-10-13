@@ -22,6 +22,7 @@ import (
 	"io/ioutil"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,8 +30,10 @@ import (
 
 	"github.com/spf13/viper"
 
+	"github.com/borgstrom/reeve/eventbus"
 	"github.com/borgstrom/reeve/protocol"
 	"github.com/borgstrom/reeve/reeve-agent/config"
+	"github.com/borgstrom/reeve/rpc"
 	"github.com/borgstrom/reeve/security"
 	"github.com/borgstrom/reeve/version"
 )
@@ -44,24 +47,25 @@ const (
 
 type Agent struct {
 	identity             *security.Identity
-	agentClient          *protocol.Client
-	eventClient          *protocol.Client
 	authorityCertificate *security.Certificate
 
-	doneChannel chan int
+	done         chan int
+	bus          *eventbus.EventBus
+	commandReady sync.WaitGroup
+	controlReady sync.WaitGroup
+
+	controlClient *rpc.ControlClient
 }
 
 func NewAgent() *Agent {
 	a := new(Agent)
 
+	a.done = make(chan int)
+
 	return a
 }
 
 func (a *Agent) Run() {
-	var (
-		err error
-	)
-
 	log.WithFields(log.Fields{
 		"id":      config.ID(),
 		"version": version.Version,
@@ -82,19 +86,84 @@ func (a *Agent) Run() {
 	director := viper.GetString("director")
 	port := viper.GetInt("port")
 
-	logger := log.WithFields(log.Fields{
-		"director": director,
-		"port":     port,
-	})
+	log.Info("Starting event bus")
+	a.bus = eventbus.NewEventBus()
 
-	// Connect to the director
-	logger.Info("Connecting to director")
-	a.agentClient = protocol.NewClient(director, port)
-	if err = a.agentClient.Connect(); err != nil {
-		log.WithError(err).Fatal("Failed to connect to the director")
+	// Make our connections
+	go a.makeConnections(director, port)
+
+	// Signal handler
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)
+		sigReceived := <-sig
+		log.WithFields(log.Fields{"signal": sigReceived}).Info("Received signal")
+		a.done <- 1
+	}()
+
+	go a.register()
+
+	// Wait until something tells us we're done
+	<-a.done
+	log.Info("Exiting")
+}
+
+func (a *Agent) register() {
+	for {
+		a.controlReady.Wait()
+
+		reply, err := a.controlClient.Register(a.identity.Certificate.Subject.CommonName)
+		if err != nil {
+			log.WithError(err).Fatal("Failed to register")
+		}
+		log.WithFields(log.Fields{
+			"expires": reply.Expires,
+		}).Debug("Registered")
+
+		time.Sleep(time.Duration(reply.Expires-1) * time.Second)
 	}
+}
 
-	proto := a.agentClient.NewProtocol()
+func (a *Agent) makeConnections(director string, port int) {
+	// Start a go routine for the Command RPC
+	go func() {
+		a.commandReady.Add(1)
+
+		log.Info("Connecting to director for Command RPC")
+		if err := protocol.Connect(director, port, a.handleCommandConnection); err != nil {
+			log.WithFields(log.Fields{
+				"error":    err,
+				"director": director,
+				"port":     port,
+			}).Fatal("Failed to connect for command RPC")
+		}
+	}()
+
+	// And one for the Control RPC
+	go func() {
+		a.controlReady.Add(1)
+
+		// Wait for the command RPC channel and TLS to be ready
+		a.commandReady.Wait()
+
+		log.Info("Connecting to director for Control RPC")
+		if err := protocol.Connect(director, port+1, a.handleControlConnection); err != nil {
+			log.WithFields(log.Fields{
+				"error":    err,
+				"director": director,
+				"port":     port + 1,
+			}).Fatal("Failed to connect for control RPC")
+		}
+	}()
+}
+
+func (a *Agent) handleCommandConnection(proto *protocol.Protocol) error {
+	var err error
+
+	logger := log.WithFields(log.Fields{
+		"address": proto.Conn().RemoteAddr().String(),
+		"type":    "command",
+	})
 
 	logger.Debug("Verifying protocol")
 	if err = proto.Validate(); err != nil {
@@ -162,46 +231,57 @@ func (a *Agent) Run() {
 
 	logger.Info("TLS connection established")
 
-	a.doneChannel = make(chan int)
+	// Mark that we're good for TLS, this will trigger the control client to connect
+	a.commandReady.Done()
 
-	// Make the event bus connection
-	func() {
-		logger = logger.WithFields(log.Fields{"port": port + 1})
-
-		logger.Info("Connecting to the event bus")
-		a.eventClient = protocol.NewClient(director, port+1)
-		if err = a.eventClient.Connect(); err != nil {
-			log.WithError(err).Fatal("Failed to connect to the event bus")
-		}
-
-		// Start TLS
-		if err = a.eventClient.NewProtocol().StartTLS(a.identity, a.authorityCertificate); err != nil {
-			logger.WithError(err).Fatal("Failed to start event bus")
-		}
-
-		logger.Debug("Event bus established!")
-	}()
+	// Wait until the control RPC connection is ready
+	a.controlReady.Wait()
 
 	// Serve RPC
-	go func() {
-		logger.Info("Serving RPC")
-		a.agentClient.ServeRPC()
-		logger.Info("Client connection closed")
-		a.doneChannel <- 1
-	}()
+	logger.Info("Serving Command RPC")
+	proto.ServeCommandRPC()
 
-	// Signal handler
-	go func() {
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)
-		sigReceived := <-sig
-		logger.WithFields(log.Fields{"signal": sigReceived}).Info("Received signal")
-		a.doneChannel <- 1
-	}()
+	return nil
+}
 
-	// Block until we're done
-	<-a.doneChannel
-	logger.Info("Exiting")
+func (a *Agent) handleControlConnection(proto *protocol.Protocol) error {
+	var err error
+
+	logger := log.WithFields(log.Fields{
+		"address": proto.Conn().RemoteAddr().String(),
+		"type":    "control",
+	})
+
+	// Start TLS
+	if err = proto.StartTLS(a.identity, a.authorityCertificate); err != nil {
+		logger.WithError(err).Fatal("Failed to start TLS")
+	}
+
+	// We are now encrypted, read an Ack over the encrypted channel
+	cmd, err := proto.ReadByte()
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to read response to csr")
+	}
+
+	if cmd != protocol.Ack {
+		logger.Fatal("Failed to receive Ack following TLS upgrade")
+	}
+
+	logger.Debug("Control RPC connection established!")
+
+	a.controlClient = rpc.NewControlClient(proto.Conn())
+
+	a.controlReady.Done()
+
+	// Some other mechanism for the client to call RPC on the director...
+	// range over something...
+
+	blah := make(chan int)
+	<-blah
+
+	a.done <- 1
+
+	return nil
 }
 
 // prepareIdentity loads or creates our identity

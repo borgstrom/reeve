@@ -21,52 +21,20 @@ package protocol
 import (
 	"fmt"
 	"net"
-
-	"github.com/borgstrom/reeve/rpc"
 )
 
-type Client struct {
-	director string
-	port     int
-	address  string
-
-	conn net.Conn
-}
+type ConnectHandler func(*Protocol) error
 
 // Creates a new Client and dials the director.  Director should be in the form <host>:<port>
-func NewClient(director string, port int) *Client {
-	c := new(Client)
-
-	c.director = director
-	c.port = port
-	c.address = fmt.Sprintf("%s:%d", director, port)
-
-	return c
-}
-
-// Connect sets up the connection to the director
-func (c *Client) Connect() error {
-	var err error
-
-	c.conn, err = net.Dial("tcp", c.address)
+func Connect(director string, port int, handler ConnectHandler) error {
+	address := fmt.Sprintf("%s:%d", director, port)
+	conn, err := net.Dial("tcp", address)
 	if err != nil {
 		return err
 	}
+	defer conn.Close()
 
-	return nil
-}
-
-// NewProtocol returns a new Protocol object based on this client's connection
-func (c *Client) NewProtocol() *Protocol {
-	p := NewProtocol(c.conn)
-
-	// Set the server name that we'll use during TLS verification
-	p.SetServerName(c.director)
-
-	return p
-}
-
-// ServeRPC passes the connection of the client to the RPC framework
-func (c *Client) ServeRPC() {
-	rpc.ServeConn(c.conn)
+	proto := NewProtocol(conn)
+	proto.SetServerName(director)
+	return handler(proto)
 }

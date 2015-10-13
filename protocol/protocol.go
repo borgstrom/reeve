@@ -27,6 +27,9 @@ import (
 	"net"
 	"time"
 
+	log "github.com/Sirupsen/logrus"
+
+	"github.com/borgstrom/reeve/rpc"
 	"github.com/borgstrom/reeve/security"
 	"github.com/borgstrom/reeve/version"
 )
@@ -62,10 +65,14 @@ func NewProtocol(conn net.Conn) *Protocol {
 	// TODO: make this deadline configurable
 	p.deadline = 500
 
-	// Set a default server name, this
+	// Set a default server name, this will be replaced with a call to SetServerName
 	p.serverName = "reeve-director"
 
 	return p
+}
+
+func (p *Protocol) Conn() net.Conn {
+	return p.conn
 }
 
 func (p *Protocol) setupBuffers() {
@@ -226,6 +233,11 @@ func (p *Protocol) StartTLS(identity *security.Identity, caCertificate *security
 	if err = tlsConn.Handshake(); err != nil {
 		return err
 	}
+
+	cs := tlsConn.ConnectionState()
+	log.WithFields(log.Fields{
+		"name": cs.PeerCertificates[0].Subject.CommonName,
+	}).Debug("Peer name")
 
 	// And replace the original connection
 	p.conn = net.Conn(tlsConn)
@@ -390,4 +402,8 @@ func (p *Protocol) HandleCertificate() (*security.Certificate, error) {
 	}
 
 	return cert, nil
+}
+
+func (p *Protocol) ServeCommandRPC() {
+	rpc.ServeCommandConn(p.conn)
 }

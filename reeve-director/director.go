@@ -26,10 +26,9 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 
-	"github.com/asaskevich/EventBus"
-
 	"github.com/spf13/viper"
 
+	"github.com/borgstrom/reeve/eventbus"
 	"github.com/borgstrom/reeve/protocol"
 	"github.com/borgstrom/reeve/reeve-director/config"
 	"github.com/borgstrom/reeve/rpc"
@@ -44,30 +43,26 @@ const (
 
 // Director holds all of the state
 type Director struct {
-	state       *state.State
-	agentServer *protocol.Server
-	eventServer *protocol.Server
-	identity    *security.Identity
-	authority   *security.Authority
-	bus         *EventBus.EventBus
-	agents      map[string]*Agent
+	state         *state.State
+	commandServer *protocol.Server
+	controlServer *protocol.Server
+	identity      *security.Identity
+	authority     *security.Authority
+	bus           *eventbus.EventBus
+	agents        map[string]*Agent
 }
 
-// AgentRequest encapsulates a request and reply and is what is used when executing RPC on an Agent
-type AgentRequest struct {
-	request *rpc.Request
-	reply   *rpc.Reply
-}
-
-// Agent holds
+// Agent holds ...
 type Agent struct {
 	id       string
-	requests chan *AgentRequest
 	identity *security.Identity
 }
 
+// NewDirector returns a new Director
 func NewDirector() *Director {
 	d := new(Director)
+
+	d.agents = make(map[string]*Agent)
 
 	return d
 }
@@ -154,7 +149,7 @@ func (d *Director) Run() {
 	}
 
 	// Setup the event bus
-	d.bus = EventBus.New()
+	d.bus = eventbus.NewEventBus()
 
 	// find other directors
 	directors := make(chan *state.DirectorEvent)
@@ -170,60 +165,23 @@ func (d *Director) Run() {
 	go d.state.DirectorHeartbeat(config.ID(), heartbeatInterval)
 
 	// Setup the servers
-	d.agentServer = protocol.NewServer(viper.GetString("host"), viper.GetInt("port"))
-	go d.agentServer.Listen(d.HandleAgentConnection)
+	d.commandServer = protocol.NewServer(viper.GetString("host"), viper.GetInt("port"))
+	go d.commandServer.Listen(d.HandleCommandConnection)
 
-	d.eventServer = protocol.NewServer(viper.GetString("host"), viper.GetInt("port")+1)
-	go d.eventServer.Listen(d.HandleEventBusConnection)
+	d.controlServer = protocol.NewServer(viper.GetString("host"), viper.GetInt("port")+1)
+	go d.controlServer.Listen(d.HandleControlConnection)
 
 	// block until interrupted
-	cleanupChannel := make(chan os.Signal, 1)
-	signal.Notify(cleanupChannel, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)
-	<-cleanupChannel
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)
+	sigReceived := <-sig
+	log.WithFields(log.Fields{"signal": sigReceived}).Info("Received signal")
 }
 
-func (d *Director) HandleEventBusConnection(conn net.Conn) {
-	var (
-		err error
-		cmd byte
-	)
-	defer conn.Close()
-
-	// setup a base logger so all messages include our address
-	logger := log.WithFields(log.Fields{
-		"address": conn.RemoteAddr().String(),
-		"type":    "event",
-	})
-
-	logger.Debug("New event bus connection")
-
-	proto := protocol.NewProtocol(conn)
-
-	// Read our command
-	cmd, err = proto.ReadByte()
-	if err != nil {
-		logger.WithError(err).Error("Failed to read command when setting up event bus")
-		return
-	}
-
-	if cmd != protocol.TLS {
-		logger.Error("Invalid command when setting up event bus")
-		return
-	}
-
-	if err = proto.HandleStartTLS(d.identity, d.authority.Certificate); err != nil {
-		logger.WithError(err).Error("Failed up handle Start TLS for event bus")
-		return
-	}
-
-	logger.Debug("Event bus established!")
-
-	// Block until we're done
-	done := make(chan int)
-	<-done
-}
-
-func (d *Director) HandleAgentConnection(conn net.Conn) {
+// HandleCommandConnection is the initial point of contact on our main port.  The protocol
+// implementation for inbound connections allows for identity exchange and signing prior to
+// upgrading to TLS.  Once upgraded we will serve RPC to the agent.
+func (d *Director) HandleCommandConnection(conn net.Conn) {
 	var (
 		err      error
 		cmd      byte
@@ -234,8 +192,10 @@ func (d *Director) HandleAgentConnection(conn net.Conn) {
 	// setup a base logger so all messages include our address
 	logger := log.WithFields(log.Fields{
 		"address": conn.RemoteAddr().String(),
-		"type":    "agent",
+		"type":    "command",
 	})
+
+	logger.Debug("New connection for Command RPC")
 
 	proto := protocol.NewProtocol(conn)
 
@@ -338,24 +298,50 @@ func (d *Director) HandleAgentConnection(conn net.Conn) {
 		}
 	}
 
-	// The connection is now upgraded to TLS
-	// Handle RPC to the agent
+	// The connection is now upgraded to TLS.  Range over commands to send to the client
+	blah := make(chan int)
+	<-blah
+}
 
-	rpcClient := rpc.NewClient(conn)
-	// Now we get our client ready and range over our channel of commands to send to the client
-	reply := new(rpc.Reply)
-	request := new(rpc.Request)
-	err = rpcClient.Call("Test.Ping", &request, &reply)
+// HandleControlConnection is the secondary point of contact for agents that happens on the main
+// port + 1.  This connection does not support any exchange of identities.  It expects to be
+// upgraded to TLS immediately, and then we send RPC to the client
+func (d *Director) HandleControlConnection(conn net.Conn) {
+	var (
+		err error
+		cmd byte
+	)
+	defer conn.Close()
+
+	// setup a base logger so all messages include our address
+	logger := log.WithFields(log.Fields{
+		"address": conn.RemoteAddr().String(),
+		"type":    "control",
+	})
+
+	logger.Debug("New connection for Control RPC")
+
+	proto := protocol.NewProtocol(conn)
+
+	// Read our command
+	cmd, err = proto.ReadByte()
 	if err != nil {
-		logger.WithError(err).Error("Ping failed")
+		logger.WithError(err).Error("Failed to read command when setting up Control RPC")
 		return
 	}
 
-	logger.Info(reply.Data)
+	if cmd != protocol.TLS {
+		logger.Error("Invalid command when setting up Control RPC")
+		return
+	}
 
-	// Block until we're done
-	done := make(chan int)
-	<-done
+	if err = proto.HandleStartTLS(d.identity, d.authority.Certificate); err != nil {
+		logger.WithError(err).Error("Failed up handle Start TLS for Control RPC")
+		return
+	}
+
+	logger.Info("Control connection established, serving RPC")
+	rpc.ServeControlConn(proto.Conn())
 }
 
 func (d *Director) HandleDirectorEvent(event *state.DirectorEvent) {

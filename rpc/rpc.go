@@ -19,40 +19,39 @@
 package rpc
 
 import (
+	"net"
 	"net/rpc"
 
-	log "github.com/Sirupsen/logrus"
+	"github.com/borgstrom/reeve/rpc/command"
+	"github.com/borgstrom/reeve/rpc/control"
 )
 
-// As we take the rpc namespace we shim through some functions
-var (
-	NewClient = rpc.NewClient
-	Register  = rpc.Register
-	ServeConn = rpc.ServeConn
-)
-
-type Request struct {
+func ServeControlConn(conn net.Conn) {
+	rpc.Register(new(control.Control))
+	rpc.ServeConn(conn)
 }
 
-type Reply struct {
-	Ok   bool
-	Data interface{}
+func ServeCommandConn(conn net.Conn) {
+	rpc.Register(new(command.Command))
+	rpc.ServeConn(conn)
 }
 
-type Test struct {
+type ControlClient struct {
+	*rpc.Client
 }
 
-func (t *Test) Ping(request *Request, reply *Reply) error {
-	log.Debug("Ping! Pong!")
-	reply.Ok = true
-	reply.Data = "Pong"
-	return nil
+// NewControlClient return a new ControlClient based off of the provided connection
+func NewControlClient(conn net.Conn) *ControlClient {
+	return &ControlClient{rpc.NewClient(conn)}
 }
 
-func init() {
-	var err error
+func (c *ControlClient) Register(agent string) (*control.RegisterReply, error) {
+	reply := new(control.RegisterReply)
 
-	if err = rpc.Register(new(Test)); err != nil {
-		log.WithError(err).Fatal("Failed to register Test RPC")
+	err := c.Call("Control.Register", &agent, reply)
+	if err != nil {
+		return nil, err
 	}
+
+	return reply, nil
 }

@@ -29,6 +29,8 @@ type Server struct {
 	address string
 }
 
+type ListenHandler func(net.Conn)
+
 func NewServer(host string, port int) *Server {
 	s := new(Server)
 
@@ -37,7 +39,7 @@ func NewServer(host string, port int) *Server {
 	return s
 }
 
-func (s *Server) Listen(handler func(net.Conn)) {
+func (s *Server) Listen(handler ListenHandler) {
 	log.WithFields(log.Fields{
 		"address": s.address,
 	}).Debug("Listening")

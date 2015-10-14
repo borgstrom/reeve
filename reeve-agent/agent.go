@@ -49,10 +49,12 @@ type Agent struct {
 	identity             *security.Identity
 	authorityCertificate *security.Certificate
 
-	done         chan int
-	bus          *eventbus.EventBus
-	commandReady sync.WaitGroup
-	controlReady sync.WaitGroup
+	done chan int
+	bus  *eventbus.EventBus
+
+	connectionsReady sync.WaitGroup
+	commandReady     sync.WaitGroup
+	controlReady     sync.WaitGroup
 
 	controlClient *rpc.ControlClient
 }
@@ -90,6 +92,7 @@ func (a *Agent) Run() {
 	a.bus = eventbus.NewEventBus()
 
 	// Make our connections
+	a.connectionsReady.Add(1)
 	go a.makeConnections(director, port)
 
 	// Signal handler
@@ -100,6 +103,8 @@ func (a *Agent) Run() {
 		log.WithFields(log.Fields{"signal": sigReceived}).Info("Received signal")
 		a.done <- 1
 	}()
+
+	a.connectionsReady.Wait()
 
 	go a.register()
 
@@ -112,6 +117,7 @@ func (a *Agent) register() {
 	for {
 		a.controlReady.Wait()
 
+		log.Debug("Registering")
 		reply, err := a.controlClient.Register(a.identity.Certificate.Subject.CommonName)
 		if err != nil {
 			log.WithError(err).Fatal("Failed to register")
@@ -155,6 +161,8 @@ func (a *Agent) makeConnections(director string, port int) {
 			}).Fatal("Failed to connect for control RPC")
 		}
 	}()
+
+	a.connectionsReady.Done()
 }
 
 func (a *Agent) handleCommandConnection(proto *protocol.Protocol) error {
@@ -215,7 +223,7 @@ func (a *Agent) handleCommandConnection(proto *protocol.Protocol) error {
 
 	// Start TLS
 	logger.Info("Upgrading connection to TLS")
-	if err = proto.StartTLS(a.identity, a.authorityCertificate); err != nil {
+	if _, err := proto.StartTLS(a.identity, a.authorityCertificate); err != nil {
 		logger.WithError(err).Fatal("Failed to start TLS")
 	}
 
@@ -253,7 +261,7 @@ func (a *Agent) handleControlConnection(proto *protocol.Protocol) error {
 	})
 
 	// Start TLS
-	if err = proto.StartTLS(a.identity, a.authorityCertificate); err != nil {
+	if _, err := proto.StartTLS(a.identity, a.authorityCertificate); err != nil {
 		logger.WithError(err).Fatal("Failed to start TLS")
 	}
 

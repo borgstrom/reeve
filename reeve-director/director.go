@@ -32,6 +32,7 @@ import (
 	"github.com/borgstrom/reeve/protocol"
 	"github.com/borgstrom/reeve/reeve-director/config"
 	"github.com/borgstrom/reeve/rpc"
+	"github.com/borgstrom/reeve/rpc/command"
 	"github.com/borgstrom/reeve/security"
 	"github.com/borgstrom/reeve/state"
 	"github.com/borgstrom/reeve/version"
@@ -56,6 +57,9 @@ type Director struct {
 type Agent struct {
 	id       string
 	identity *security.Identity
+	command  *rpc.CommandClient
+
+	Commands chan *command.DispatchRequest
 }
 
 // NewDirector returns a new Director
@@ -186,6 +190,7 @@ func (d *Director) HandleCommandConnection(conn net.Conn) {
 		err      error
 		cmd      byte
 		startTLS bool
+		peerId   string
 	)
 	defer conn.Close()
 
@@ -282,11 +287,13 @@ func (d *Director) HandleCommandConnection(conn net.Conn) {
 
 		case protocol.TLS:
 			logger.Info("Upgrading connection to TLS")
-			if err = proto.HandleStartTLS(d.identity, d.authority.Certificate); err != nil {
+			if peerId, err = proto.HandleStartTLS(d.identity, d.authority.Certificate); err != nil {
 				logger.WithError(err).Error("Failed up handle Start TLS")
 				return
 			}
-			logger.Debug("Upgraded!")
+			logger.WithFields(log.Fields{
+				"peerId": peerId,
+			}).Debug("Upgraded!")
 
 			startTLS = true
 
@@ -298,9 +305,34 @@ func (d *Director) HandleCommandConnection(conn net.Conn) {
 		}
 	}
 
-	// The connection is now upgraded to TLS.  Range over commands to send to the client
-	blah := make(chan int)
-	<-blah
+	// The connection is now upgraded to TLS and will be serving RPC to us
+	// Load the agent's profile based on the peer ID from the TLS
+	if err = d.LoadAgent(peerId); err != nil {
+		log.WithError(err).Error("Failed to load agent profile")
+		return
+	}
+
+	commandClient := rpc.NewCommandClient(proto.Conn())
+
+	// XXX TESTING
+	reply, err := commandClient.Dispatch(&command.DispatchRequest{
+		Module:   "file",
+		Function: "chown",
+		Args:     command.Args{"/tmp/blah", 755},
+	})
+	if err != nil {
+		log.WithError(err).Error("Failed to chown")
+	}
+	if !reply.Ok {
+		log.WithFields(log.Fields{
+			"error": reply.Error,
+		}).Error("Failed to chown")
+	}
+
+	log.Info(reply.Result)
+
+	// This will block
+	d.HandleAgentCommands(peerId, commandClient)
 }
 
 // HandleControlConnection is the secondary point of contact for agents that happens on the main
@@ -308,8 +340,9 @@ func (d *Director) HandleCommandConnection(conn net.Conn) {
 // upgraded to TLS immediately, and then we send RPC to the client
 func (d *Director) HandleControlConnection(conn net.Conn) {
 	var (
-		err error
-		cmd byte
+		err    error
+		cmd    byte
+		peerId string
 	)
 	defer conn.Close()
 
@@ -335,8 +368,16 @@ func (d *Director) HandleControlConnection(conn net.Conn) {
 		return
 	}
 
-	if err = proto.HandleStartTLS(d.identity, d.authority.Certificate); err != nil {
+	if peerId, err = proto.HandleStartTLS(d.identity, d.authority.Certificate); err != nil {
 		logger.WithError(err).Error("Failed up handle Start TLS for Control RPC")
+		return
+	}
+
+	_, ok := d.agents[peerId]
+	if !ok {
+		logger.WithFields(log.Fields{
+			"id": peerId,
+		}).Error("There is no agent registered with the peer ID supplied during Start TLS")
 		return
 	}
 
@@ -362,5 +403,40 @@ func (d *Director) HandleDirectorEvent(event *state.DirectorEvent) {
 		log.WithFields(log.Fields{
 			"peer": event.Node,
 		}).Info("Peer expiration")
+	}
+}
+
+func (d *Director) LoadAgent(id string) error {
+	// Try to load the identity
+	identity, err := d.state.LoadIdentity(id)
+	if err != nil {
+		return err
+	}
+
+	a := new(Agent)
+	a.id = id
+	a.identity = identity
+	a.Commands = make(chan *command.DispatchRequest)
+
+	d.agents[id] = a
+
+	return nil
+}
+
+func (d *Director) HandleAgentCommands(id string, command *rpc.CommandClient) {
+	agent, ok := d.agents[id]
+	if !ok {
+		log.WithFields(log.Fields{
+			"id": id,
+		}).Fatal("Could not load agent when trying to handle commands")
+	}
+
+	// Range over commands to send to the client
+	for command := range agent.Commands {
+		log.WithFields(log.Fields{
+			"command": command,
+		}).Debug("Received command for dispatching")
+
+		agent.command.Dispatch(command)
 	}
 }

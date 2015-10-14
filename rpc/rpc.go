@@ -26,16 +26,19 @@ import (
 	"github.com/borgstrom/reeve/rpc/control"
 )
 
+// ServeControlConn takes a net connection, registers the Control module and serves RPC
 func ServeControlConn(conn net.Conn) {
 	rpc.Register(new(control.Control))
 	rpc.ServeConn(conn)
 }
 
+// ServeCommandConn takes a net connection, registers the Command module and serves RPC
 func ServeCommandConn(conn net.Conn) {
 	rpc.Register(new(command.Command))
 	rpc.ServeConn(conn)
 }
 
+// ControlClient is our custom rpc client for Control connections
 type ControlClient struct {
 	*rpc.Client
 }
@@ -45,10 +48,33 @@ func NewControlClient(conn net.Conn) *ControlClient {
 	return &ControlClient{rpc.NewClient(conn)}
 }
 
+// Register is a stub to the Control.Register RPC method
 func (c *ControlClient) Register(agent string) (*control.RegisterReply, error) {
 	reply := new(control.RegisterReply)
 
 	err := c.Call("Control.Register", &agent, reply)
+	if err != nil {
+		return nil, err
+	}
+
+	return reply, nil
+}
+
+// CommandClient is our custom rpc client for Command connections
+type CommandClient struct {
+	*rpc.Client
+}
+
+// NewCommandClient takes a net connection and returns a new CommandClient
+func NewCommandClient(conn net.Conn) *CommandClient {
+	return &CommandClient{rpc.NewClient(conn)}
+}
+
+// Dispatch is a stub to the Command.Dispatch RPC method
+func (c *CommandClient) Dispatch(request *command.DispatchRequest) (*command.DispatchReply, error) {
+	reply := new(command.DispatchReply)
+
+	err := c.Call("Command.Dispatch", request, reply)
 	if err != nil {
 		return nil, err
 	}

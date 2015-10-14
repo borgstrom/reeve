@@ -27,8 +27,6 @@ import (
 	"net"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
-
 	"github.com/borgstrom/reeve/rpc"
 	"github.com/borgstrom/reeve/security"
 	"github.com/borgstrom/reeve/version"
@@ -208,14 +206,15 @@ func (p *Protocol) tlsSetup(config *tls.Config, identity *security.Identity, caC
 }
 
 // StartTLS takes an identity and an authority certificate and upgrades the net.Conn on the protocol to TLS
-func (p *Protocol) StartTLS(identity *security.Identity, caCertificate *security.Certificate) error {
+// It returns the CommonName from the peer certitifcate, or an error
+func (p *Protocol) StartTLS(identity *security.Identity, caCertificate *security.Certificate) (string, error) {
 	var (
 		err     error
 		tlsConn *tls.Conn
 	)
 
 	if err = p.WriteBytesWithDeadline([]byte{TLS}); err != nil {
-		return err
+		return "", err
 	}
 
 	// Build the config
@@ -224,29 +223,30 @@ func (p *Protocol) StartTLS(identity *security.Identity, caCertificate *security
 
 	// Setup the tls connection
 	if err = p.tlsSetup(config, identity, caCertificate); err != nil {
-		return err
+		return "", err
 	}
 
 	// Upgrade the connection to TLS
 	// TODO: Add a deadline here?
 	tlsConn = tls.Client(p.conn, config)
 	if err = tlsConn.Handshake(); err != nil {
-		return err
+		return "", err
 	}
 
+	// Capture the connection state
 	cs := tlsConn.ConnectionState()
-	log.WithFields(log.Fields{
-		"name": cs.PeerCertificates[0].Subject.CommonName,
-	}).Debug("Peer name")
 
 	// And replace the original connection
 	p.conn = net.Conn(tlsConn)
 	p.setupBuffers()
 
-	return nil
+	return cs.PeerCertificates[0].Subject.CommonName, nil
 }
 
-func (p *Protocol) HandleStartTLS(identity *security.Identity, caCertificate *security.Certificate) error {
+// HandleStartTLS is the companion to StartTLS, and will do the connection upgrade.  It assumes
+// that the TLS command byte has already been read.  Like StartTLS it returns the peer name, or
+// an error
+func (p *Protocol) HandleStartTLS(identity *security.Identity, caCertificate *security.Certificate) (string, error) {
 	var (
 		err     error
 		tlsConn *tls.Conn
@@ -258,15 +258,18 @@ func (p *Protocol) HandleStartTLS(identity *security.Identity, caCertificate *se
 
 	// Setup the tls connection
 	if err := p.tlsSetup(config, identity, caCertificate); err != nil {
-		return err
+		return "", err
 	}
 
 	// Upgrade the connection to TLS
 	// TODO: Add a deadline here?
 	tlsConn = tls.Server(p.conn, config)
 	if err = tlsConn.Handshake(); err != nil {
-		return err
+		return "", err
 	}
+
+	// Capture the connection state
+	cs := tlsConn.ConnectionState()
 
 	// And replace the original connection
 	p.conn = net.Conn(tlsConn)
@@ -275,7 +278,7 @@ func (p *Protocol) HandleStartTLS(identity *security.Identity, caCertificate *se
 	// Send an Ack
 	p.Ack()
 
-	return nil
+	return cs.PeerCertificates[0].Subject.CommonName, nil
 }
 
 // Announce sends our protocol identifiers over the connection

@@ -23,8 +23,8 @@ type ModuleFunction interface{}
 type ModuleFunctions map[string]ModuleFunction
 
 type Module struct {
-	name      string
-	functions ModuleFunctions
+	Name      string
+	Functions ModuleFunctions
 }
 
 var registeredModules = make(map[string]*Module)
@@ -32,10 +32,24 @@ var registeredModules = make(map[string]*Module)
 // Register creates a new module and adds it to the registered list
 func Register(name string, functions ModuleFunctions) *Module {
 	m := new(Module)
-	m.name = name
-	m.functions = functions
+	m.Name = name
+	m.Functions = functions
 
 	registeredModules[name] = m
 
 	return m
+}
+
+func FindFunction(module string, name string) ModuleFunction {
+	mod, ok := registeredModules[module]
+	if !ok {
+		return nil
+	}
+
+	fun, ok := mod.Functions[name]
+	if !ok {
+		return nil
+	}
+
+	return fun
 }

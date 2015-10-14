@@ -27,16 +27,13 @@ Theory / Notes
 
 ```
 
-reeve-director maintains connections to the servers, runs on at least 1 node
+tl;dr
 
-etcd maintains state, runs on all the director nodes (only accessible by directors)
-
-reeve-agent is what executes code on behalf of the directors, runs on all nodes
-
-reeve is the client, used to interact with the servers, via the director
-
-Reeve director handles RPC on port 4195 and the event bus on 4196.
-
+* reeve-director maintains connections to the servers, runs on at least 1 node
+* etcd maintains state, runs on all the director nodes (only accessible by directors)
+* reeve-agent is what executes code on behalf of the directors, runs on all nodes
+* reeve is the client, used to interact with the servers, via the director
+* reeve-director handles the Raw Protocol and Command RPC on port 4195 and Control RPC on 4196.
 
 Reeve director nodes have persistent connections between each other to create a full mesh.  This
 allows them to redirect and broadcast messages to each other.  When a director starts up it
@@ -59,9 +56,11 @@ The agents starts up and will generate its keypair, if it doesn't exist.
 Security
 --------
 
-The security of etcd is paramount to the security of reeve, as it contains all of the private keys
-and identity information for the network.  If etcd is compromised, reeve is compromised.  Thus, the
-setup and securing of etcd is left as an exercise to the operator.
+The security of etcd is paramount to the security of reeve, as it contains all the private keys for
+the CA and all of the and identity information for the network.  If etcd is compromised, reeve is
+compromised.
+
+The setup and securing of etcd is left as an exercise to the operator.
 
 
 Raw Protocol
@@ -70,9 +69,11 @@ Raw Protocol
 The Raw Protocol is what is used to exchange keys and prepare a session for TLS, prior to starting
 the RPC mechanism on port 4195.  
 
-It is a string based protocol that uses null bytes (`\x00`) to separate strings. 
+It uses a single byte for control messages and exchanges strings as null terminated payloads.
 
 The flow arrows in the following section represent: agent -> director
+
+Upon connection the director announces itself via the protocol token and version.
 
 ```
 <- protocol token
@@ -116,12 +117,8 @@ the client has a signed certificate when it connects it can move directly to thi
 
 The server will then upgrade the connection to mutual auth TLS and RPC will be started.
 
-At the same time the client must open a connection to the event bus on port 4196.   This connection
-is TLS by default and there is no key exchange.
-
-To ensure the event bus has been setup correctly the server will send an initializer event over the
-bus with a random number following connection.  The agent must call a verifier RPC with this number
-or the director will close both connections.
+At the same time the client must open a connection to the Control RPC on port 4196.   This
+connection is TLS by default and there is no key exchange.
 
 ### Command RPC
 
@@ -145,6 +142,8 @@ TLS.
 <- protocol token
 <- protocol version
 -> dir
+-> tls
+<- ack
 ```
 
 

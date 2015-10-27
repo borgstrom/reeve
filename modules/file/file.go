@@ -19,22 +19,33 @@
 package file
 
 import (
+	"errors"
+
 	log "github.com/Sirupsen/logrus"
 
 	"github.com/borgstrom/reeve/modules"
 )
 
 func init() {
-	modules.Register("file", modules.ModuleFunctions{
+	modules.Register("file", modules.Functions{
 		"chown": Chown,
 	})
 }
 
-func Chown(path string, mode int) (bool, error) {
+func Chown(in modules.Args, out modules.Args) error {
+	path, err := in.GetString("path")
+	if err != nil {
+		return errors.New("A valid path is required.")
+	}
+	mode, err := in.GetInt("mode")
+	if err != nil {
+		return errors.New("A valid mode is required.")
+	}
+
 	log.WithFields(log.Fields{
 		"path": path,
 		"mode": mode,
 	}).Debug("Chown")
 
-	return true, nil
+	return nil
 }

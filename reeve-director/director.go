@@ -26,16 +26,14 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 
-	"github.com/spf13/viper"
-
 	"github.com/borgstrom/reeve/eventbus"
+	"github.com/borgstrom/reeve/modules"
 	"github.com/borgstrom/reeve/protocol"
 	"github.com/borgstrom/reeve/reeve-director/config"
-	"github.com/borgstrom/reeve/rpc"
 	"github.com/borgstrom/reeve/rpc/command"
+	"github.com/borgstrom/reeve/rpc/control"
 	"github.com/borgstrom/reeve/security"
 	"github.com/borgstrom/reeve/state"
-	"github.com/borgstrom/reeve/version"
 )
 
 const (
@@ -57,16 +55,22 @@ type Director struct {
 type Agent struct {
 	id       string
 	identity *security.Identity
-	command  *rpc.CommandClient
-
-	Commands chan *command.DispatchRequest
+	command  *command.CommandClient
+	commands chan *command.DispatchRequest
 }
 
 // NewDirector returns a new Director
-func NewDirector() *Director {
+func NewDirector(etcHosts []string, controlAddress string, commandAddress string) *Director {
 	d := new(Director)
 
 	d.agents = make(map[string]*Agent)
+
+	// Create our state
+	d.state = state.NewState(etcHosts)
+
+	// Setup the servers
+	d.controlServer = protocol.NewServer(controlAddress)
+	d.commandServer = protocol.NewServer(commandAddress)
 
 	return d
 }
@@ -104,17 +108,8 @@ func (d *Director) createIdentity(name string) (*security.Identity, error) {
 	return i, nil
 }
 
-func (d *Director) Run() {
+func (d *Director) Run(id string) {
 	var err error
-
-	log.WithFields(log.Fields{
-		"id":      config.ID(),
-		"version": version.Version,
-		"git":     version.GitSHA,
-	}).Print("reeve-director starting")
-
-	// Create our state
-	d.state = state.NewState(viper.GetStringSlice("etc.hosts"))
 
 	// get our authority
 	log.Info("Loading authority")
@@ -168,12 +163,19 @@ func (d *Director) Run() {
 	// register as a director
 	go d.state.DirectorHeartbeat(config.ID(), heartbeatInterval)
 
-	// Setup the servers
-	d.commandServer = protocol.NewServer(viper.GetString("host"), viper.GetInt("port"))
-	go d.commandServer.Listen(d.HandleCommandConnection)
+	// watch for agent expirations
+	// XXX TODO
 
-	d.controlServer = protocol.NewServer(viper.GetString("host"), viper.GetInt("port")+1)
+	// Start our servers listening
+	log.WithFields(log.Fields{
+		"server": d.controlServer,
+	}).Debug("Listening for control connections")
 	go d.controlServer.Listen(d.HandleControlConnection)
+
+	log.WithFields(log.Fields{
+		"server": d.commandServer,
+	}).Debug("Listening for command connections")
+	go d.commandServer.Listen(d.HandleCommandConnection)
 
 	// block until interrupted
 	sig := make(chan os.Signal, 1)
@@ -182,25 +184,23 @@ func (d *Director) Run() {
 	log.WithFields(log.Fields{"signal": sigReceived}).Info("Received signal")
 }
 
-// HandleCommandConnection is the initial point of contact on our main port.  The protocol
-// implementation for inbound connections allows for identity exchange and signing prior to
-// upgrading to TLS.  Once upgraded we will serve RPC to the agent.
-func (d *Director) HandleCommandConnection(conn net.Conn) {
+// HandleControlConnection ...
+func (d *Director) HandleControlConnection(conn net.Conn) {
 	var (
 		err      error
 		cmd      byte
-		startTLS bool
 		peerId   string
+		startTLS bool
 	)
 	defer conn.Close()
 
 	// setup a base logger so all messages include our address
 	logger := log.WithFields(log.Fields{
 		"address": conn.RemoteAddr().String(),
-		"type":    "command",
+		"type":    "control",
 	})
 
-	logger.Debug("New connection for Command RPC")
+	logger.Debug("New connection for Control RPC")
 
 	proto := protocol.NewProtocol(conn)
 
@@ -295,6 +295,14 @@ func (d *Director) HandleCommandConnection(conn net.Conn) {
 				"peerId": peerId,
 			}).Debug("Upgraded!")
 
+			// Load our identity.   We don't actually care about the identity -- we just want to
+			// make sure that it's valid and loads correctly based on this peer ID
+			_, err := d.state.LoadIdentity(peerId)
+			if err != nil {
+				logger.WithError(err).Error("Failed to load Agent Identity")
+				return
+			}
+
 			startTLS = true
 
 		default:
@@ -305,40 +313,14 @@ func (d *Director) HandleCommandConnection(conn net.Conn) {
 		}
 	}
 
-	// The connection is now upgraded to TLS and will be serving RPC to us
-	// Load the agent's profile based on the peer ID from the TLS
-	if err = d.LoadAgent(peerId); err != nil {
-		log.WithError(err).Error("Failed to load agent profile")
-		return
-	}
-
-	commandClient := rpc.NewCommandClient(proto.Conn())
-
-	// XXX TESTING
-	reply, err := commandClient.Dispatch(&command.DispatchRequest{
-		Module:   "file",
-		Function: "chown",
-		Args:     command.Args{"/tmp/blah", 755},
-	})
-	if err != nil {
-		log.WithError(err).Error("Failed to chown")
-	}
-	if !reply.Ok {
-		log.WithFields(log.Fields{
-			"error": reply.Error,
-		}).Error("Failed to chown")
-	}
-
-	log.Info(reply.Result)
-
-	// This will block
-	d.HandleAgentCommands(peerId, commandClient)
+	logger.Info("Control connection established, serving RPC")
+	control.ServeConn(proto.Conn(), control.NewRPC(d))
 }
 
-// HandleControlConnection is the secondary point of contact for agents that happens on the main
-// port + 1.  This connection does not support any exchange of identities.  It expects to be
-// upgraded to TLS immediately, and then we send RPC to the client
-func (d *Director) HandleControlConnection(conn net.Conn) {
+// HandleCommandConnection is the initial point of contact on our main port.  The protocol
+// implementation for inbound connections allows for identity exchange and signing prior to
+// upgrading to TLS.  Once upgraded we will serve RPC to the agent.
+func (d *Director) HandleCommandConnection(conn net.Conn) {
 	var (
 		err    error
 		cmd    byte
@@ -349,10 +331,10 @@ func (d *Director) HandleControlConnection(conn net.Conn) {
 	// setup a base logger so all messages include our address
 	logger := log.WithFields(log.Fields{
 		"address": conn.RemoteAddr().String(),
-		"type":    "control",
+		"type":    "command",
 	})
 
-	logger.Debug("New connection for Control RPC")
+	logger.Debug("New connection for Command RPC")
 
 	proto := protocol.NewProtocol(conn)
 
@@ -373,16 +355,23 @@ func (d *Director) HandleControlConnection(conn net.Conn) {
 		return
 	}
 
-	_, ok := d.agents[peerId]
+	// The connection is now upgraded to TLS and will be serving RPC to us
+	// Load the agent's profile based on the peer ID from the TLS
+	agent, ok := d.agents[peerId]
 	if !ok {
-		logger.WithFields(log.Fields{
-			"id": peerId,
-		}).Error("There is no agent registered with the peer ID supplied during Start TLS")
+		log.WithFields(log.Fields{
+			"peerId": peerId,
+		}).Error("No agent found for peerId")
 		return
 	}
+	/*
+		if err != nil {
+			log.WithError(err).Error("Failed to load agent profile")
+			return
+		}*/
 
-	logger.Info("Control connection established, serving RPC")
-	rpc.ServeControlConn(proto.Conn())
+	// This will block
+	agent.HandleConn(proto.Conn())
 }
 
 func (d *Director) HandleDirectorEvent(event *state.DirectorEvent) {
@@ -406,37 +395,52 @@ func (d *Director) HandleDirectorEvent(event *state.DirectorEvent) {
 	}
 }
 
-func (d *Director) LoadAgent(id string) error {
+// LoadAgent takes a string ID and loads an Agent based on the data in our state.
+// This is used by the control RPC implementation, as such it returns the control interface
+// instead of the concrete implementation.
+func (d *Director) LoadAgent(id string) (control.Agent, error) {
 	// Try to load the identity
 	identity, err := d.state.LoadIdentity(id)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	a := new(Agent)
 	a.id = id
 	a.identity = identity
-	a.Commands = make(chan *command.DispatchRequest)
+	a.commands = make(chan *command.DispatchRequest)
 
-	d.agents[id] = a
-
-	return nil
+	return a, nil
 }
 
-func (d *Director) HandleAgentCommands(id string, command *rpc.CommandClient) {
-	agent, ok := d.agents[id]
-	if !ok {
-		log.WithFields(log.Fields{
-			"id": id,
-		}).Fatal("Could not load agent when trying to handle commands")
-	}
+func (d *Director) RegisterAgent(id string, agent control.Agent) {
+	d.agents[id] = agent.(*Agent)
+}
+
+func (a *Agent) HandleConn(conn net.Conn) {
+	a.command = command.NewClient(conn)
 
 	// Range over commands to send to the client
-	for command := range agent.Commands {
+	for command := range a.commands {
 		log.WithFields(log.Fields{
 			"command": command,
 		}).Debug("Received command for dispatching")
 
-		agent.command.Dispatch(command)
+		reply := make(modules.Args)
+		err := a.command.Dispatch(command, reply)
+		if err != nil {
+			log.WithFields(log.Fields{
+				"error":   err,
+				"command": command,
+			}).Error("Failed to dispatch command")
+		}
+	}
+}
+
+func (a *Agent) Dispatch(module string, function string, args modules.Args) {
+	a.commands <- &command.DispatchRequest{
+		Module:   module,
+		Function: function,
+		Args:     args,
 	}
 }

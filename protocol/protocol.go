@@ -27,7 +27,6 @@ import (
 	"net"
 	"time"
 
-	"github.com/borgstrom/reeve/rpc"
 	"github.com/borgstrom/reeve/security"
 	"github.com/borgstrom/reeve/version"
 )
@@ -405,8 +404,4 @@ func (p *Protocol) HandleCertificate() (*security.Certificate, error) {
 	}
 
 	return cert, nil
-}
-
-func (p *Protocol) ServeCommandRPC() {
-	rpc.ServeCommandConn(p.conn)
 }

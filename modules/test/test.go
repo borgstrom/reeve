@@ -23,11 +23,12 @@ import (
 )
 
 func init() {
-	modules.Register("test", modules.ModuleFunctions{
+	modules.Register("test", modules.Functions{
 		"ping": Ping,
 	})
 }
 
-func Ping() (string, error) {
-	return "Pong", nil
+func Ping(in modules.Args, out modules.Args) error {
+	out["reply"] = "pong"
+	return nil
 }

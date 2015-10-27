@@ -17,11 +17,16 @@
 package main
 
 import (
+	"fmt"
 	"runtime"
 
+	log "github.com/Sirupsen/logrus"
+
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 
 	"github.com/borgstrom/reeve/reeve-director/config"
+	"github.com/borgstrom/reeve/version"
 )
 
 var MainCommand = &cobra.Command{
@@ -35,7 +40,19 @@ var RunCommand = &cobra.Command{
 	Short: "Run the director",
 
 	Run: func(cmd *cobra.Command, args []string) {
-		NewDirector().Run()
+		log.WithFields(log.Fields{
+			"id":      config.ID(),
+			"version": version.Version,
+			"git":     version.GitSHA,
+		}).Print("reeve-director starting")
+
+		dir := NewDirector(
+			viper.GetStringSlice("etc.hosts"),
+			fmt.Sprintf("%s:%d", viper.GetString("host"), viper.GetInt("port")),
+			fmt.Sprintf("%s:%d", viper.GetString("host"), viper.GetInt("port")+1),
+		)
+
+		dir.Run(config.ID())
 	},
 }
 

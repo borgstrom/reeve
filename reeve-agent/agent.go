@@ -33,8 +33,10 @@ import (
 	"github.com/borgstrom/reeve/eventbus"
 	"github.com/borgstrom/reeve/protocol"
 	"github.com/borgstrom/reeve/reeve-agent/config"
-	"github.com/borgstrom/reeve/rpc"
+	"github.com/borgstrom/reeve/rpc/command"
+	"github.com/borgstrom/reeve/rpc/control"
 	"github.com/borgstrom/reeve/security"
+	"github.com/borgstrom/reeve/state"
 	"github.com/borgstrom/reeve/version"
 )
 
@@ -42,7 +44,7 @@ const (
 	keyName = "reeve-agent.key"
 	csrName = "reeve-agent.csr"
 	crtName = "reeve-agent.crt"
-	caName  = "reeve-ca.crt"
+	caName  = "reeve-agent-ca.crt"
 )
 
 type Agent struct {
@@ -56,7 +58,7 @@ type Agent struct {
 	commandReady     sync.WaitGroup
 	controlReady     sync.WaitGroup
 
-	controlClient *rpc.ControlClient
+	controlClient *control.ControlClient
 }
 
 func NewAgent() *Agent {
@@ -79,7 +81,7 @@ func (a *Agent) Run() {
 
 	if !a.identity.IsValid() {
 		log.Fatal("Our identity is not valid!\n" +
-			"You should purge the keys on this node and invalidate the identity on the directors.\n" +
+			"You should purge the keys on this agent and invalidate the identity on the directors.\n" +
 			"This should not ever happen unless you've manually altered the keys.\n" +
 			"If you can reproduce it, please file a bug at:\n" +
 			"https://github.com/borgstrom/reeve/issues")
@@ -115,6 +117,8 @@ func (a *Agent) Run() {
 
 func (a *Agent) register() {
 	for {
+		// Before registering we need both the command & control RPC interfaces to be ready
+		a.commandReady.Wait()
 		a.controlReady.Wait()
 
 		log.Debug("Registering")
@@ -122,6 +126,13 @@ func (a *Agent) register() {
 		if err != nil {
 			log.WithError(err).Fatal("Failed to register")
 		}
+
+		if !reply.Ok {
+			log.Error("Failed to register, retrying in 5 seconds...")
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
 		log.WithFields(log.Fields{
 			"expires": reply.Expires,
 		}).Debug("Registered")
@@ -131,29 +142,29 @@ func (a *Agent) register() {
 }
 
 func (a *Agent) makeConnections(director string, port int) {
-	// Start a go routine for the Command RPC
+	// Start a go routine for the Control RPC
 	go func() {
-		a.commandReady.Add(1)
+		a.controlReady.Add(1)
 
-		log.Info("Connecting to director for Command RPC")
-		if err := protocol.Connect(director, port, a.handleCommandConnection); err != nil {
+		log.Info("Connecting to director for Control RPC")
+		if err := protocol.Connect(director, port, a.handleControlConnection); err != nil {
 			log.WithFields(log.Fields{
 				"error":    err,
 				"director": director,
 				"port":     port,
-			}).Fatal("Failed to connect for command RPC")
+			}).Fatal("Failed to connect for Control RPC")
 		}
 	}()
 
-	// And one for the Control RPC
+	// And one for the Command RPC
 	go func() {
-		a.controlReady.Add(1)
+		a.commandReady.Add(1)
 
-		// Wait for the command RPC channel and TLS to be ready
-		a.commandReady.Wait()
+		// Wait for the Control RPC channel and TLS to be ready
+		a.controlReady.Wait()
 
-		log.Info("Connecting to director for Control RPC")
-		if err := protocol.Connect(director, port+1, a.handleControlConnection); err != nil {
+		log.Info("Connecting to director for Command RPC")
+		if err := protocol.Connect(director, port+1, a.handleCommandConnection); err != nil {
 			log.WithFields(log.Fields{
 				"error":    err,
 				"director": director,
@@ -162,15 +173,15 @@ func (a *Agent) makeConnections(director string, port int) {
 		}
 	}()
 
-	a.connectionsReady.Done()
+	go a.connectionsReady.Done()
 }
 
-func (a *Agent) handleCommandConnection(proto *protocol.Protocol) error {
+func (a *Agent) handleControlConnection(proto *protocol.Protocol) error {
 	var err error
 
 	logger := log.WithFields(log.Fields{
 		"address": proto.Conn().RemoteAddr().String(),
-		"type":    "command",
+		"type":    "control",
 	})
 
 	logger.Debug("Verifying protocol")
@@ -209,13 +220,13 @@ func (a *Agent) handleCommandConnection(proto *protocol.Protocol) error {
 			}
 
 			// Store the new certificates in local files
-			crtFile := config.Path("state", "agent.crt")
-			if err = createPEM(crtFile, a.identity.Certificate); err != nil {
+			crtFile := config.Path("state", crtName)
+			if err = state.CreatePEM(crtFile, a.identity.Certificate); err != nil {
 				logger.WithError(err).Fatal("Failed to save signed certificate!")
 			}
 
-			caFile := config.Path("state", "authority.crt")
-			if err = createPEM(caFile, a.authorityCertificate); err != nil {
+			caFile := config.Path("state", caName)
+			if err = state.CreatePEM(caFile, a.authorityCertificate); err != nil {
 				logger.WithError(err).Fatal("Failed to save ca certificate!")
 			}
 		}
@@ -239,25 +250,28 @@ func (a *Agent) handleCommandConnection(proto *protocol.Protocol) error {
 
 	logger.Info("TLS connection established")
 
-	// Mark that we're good for TLS, this will trigger the control client to connect
-	a.commandReady.Done()
+	// Mark that we're good for TLS, this will trigger the command client to connect
+	a.controlReady.Done()
 
-	// Wait until the control RPC connection is ready
-	a.controlReady.Wait()
+	logger.Debug("Control RPC connection established!")
 
-	// Serve RPC
-	logger.Info("Serving Command RPC")
-	proto.ServeCommandRPC()
+	a.controlClient = control.NewClient(proto.Conn())
+
+	// Some other mechanism for the client to call RPC on the director...
+	// range over something...
+
+	blah := make(chan int)
+	<-blah
 
 	return nil
 }
 
-func (a *Agent) handleControlConnection(proto *protocol.Protocol) error {
+func (a *Agent) handleCommandConnection(proto *protocol.Protocol) error {
 	var err error
 
 	logger := log.WithFields(log.Fields{
 		"address": proto.Conn().RemoteAddr().String(),
-		"type":    "control",
+		"type":    "command",
 	})
 
 	// Start TLS
@@ -275,19 +289,11 @@ func (a *Agent) handleControlConnection(proto *protocol.Protocol) error {
 		logger.Fatal("Failed to receive Ack following TLS upgrade")
 	}
 
-	logger.Debug("Control RPC connection established!")
+	go a.commandReady.Done()
 
-	a.controlClient = rpc.NewControlClient(proto.Conn())
-
-	a.controlReady.Done()
-
-	// Some other mechanism for the client to call RPC on the director...
-	// range over something...
-
-	blah := make(chan int)
-	<-blah
-
-	a.done <- 1
+	// Serve RPC
+	logger.Info("Serving Command RPC")
+	command.ServeConn(proto.Conn(), command.NewRPC())
 
 	return nil
 }
@@ -299,16 +305,10 @@ func (a *Agent) prepareIdentity() {
 		fileBytes []byte
 	)
 
-	a.identity = security.NewIdentity(config.ID())
-
-	log.WithFields(log.Fields{
-		"state": config.Path("state"),
-	}).Debug("Loading identity")
-
-	caFile := config.Path("state", "authority.crt")
+	caFile := config.Path("state", caName)
 	_, err = os.Stat(caFile)
 	if err == nil {
-		// The ca exists, load it
+		// The ca cert exists, load it
 		fileBytes, err = ioutil.ReadFile(caFile)
 		a.authorityCertificate, err = security.CertificateFromPEM(fileBytes)
 		if err != nil {
@@ -316,73 +316,18 @@ func (a *Agent) prepareIdentity() {
 		}
 	}
 
-	keyFile := config.Path("state", "agent.key")
-	_, err = os.Stat(keyFile)
-	if err == nil {
-		// The key exists, load it
-		fileBytes, err = ioutil.ReadFile(keyFile)
-		if err = a.identity.LoadKey(fileBytes); err != nil {
-			log.WithError(err).Fatal("Failed to load private key")
-		}
-	} else {
-		// Create a new one
-		if err = a.identity.NewKey(); err != nil {
-			log.WithError(err).Fatal("Failed to generate a new key")
-		}
+	log.WithFields(log.Fields{
+		"state": config.Path("state"),
+	}).Debug("Loading identity")
 
-		// And save it
-		if err = createPEM(keyFile, a.identity.Key); err != nil {
-			log.WithError(err).WithFields(log.Fields{"key": keyFile}).Fatal("Failed to open key for writing")
-		}
-	}
-
-	crtFile := config.Path("state", "agent.crt")
-	_, err = os.Stat(crtFile)
-	if err == nil {
-		// The certificate exists, load it
-		fileBytes, err = ioutil.ReadFile(crtFile)
-		if err = a.identity.LoadCertificate(fileBytes); err != nil {
-			log.WithError(err).Fatal("Failed to load certificate")
-		}
-
-		// At this point we are done and the identity is ready to use
-		return
-	}
-
-	// See if we have an existing csr
-	csrFile := config.Path("state", "agent.csr")
-	_, err = os.Stat(csrFile)
-	if err == nil {
-		// The request exists, load it
-		fileBytes, err = ioutil.ReadFile(csrFile)
-		if err = a.identity.LoadRequest(fileBytes); err != nil {
-			log.WithError(err).Fatal("Failed to load signing request")
-		}
-	} else {
-		// Create a new request
-		if err = a.identity.NewRequest(); err != nil {
-			log.WithError(err).Fatal("Failed to create the new signing request")
-		}
-
-		// And save it
-		if err = createPEM(csrFile, a.identity.Request); err != nil {
-			log.WithFields(log.Fields{
-				"error": err,
-				"file":  csrFile,
-			}).Fatal("Failed to save request")
-		}
-	}
-}
-
-// createPEM takes a file name and a pem writer, creates a file and writes the pem bytes out
-func createPEM(pemFile string, writer security.PEMWriter) error {
-	f, err := os.Create(pemFile)
+	a.identity, err = state.LoadIdentityFromFiles(
+		config.ID(),
+		config.Path("state", keyName),
+		config.Path("state", crtName),
+		config.Path("state", csrName),
+	)
 	if err != nil {
-		return err
+		log.WithError(err).Fatal("Failed to load identity")
 	}
 
-	writer.WritePEM(f)
-	f.Chmod(0400)
-
-	return nil
 }

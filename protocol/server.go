@@ -19,10 +19,7 @@ limitations under the License.
 package protocol
 
 import (
-	"fmt"
 	"net"
-
-	log "github.com/Sirupsen/logrus"
 )
 
 type Server struct {
@@ -31,25 +28,22 @@ type Server struct {
 
 type ListenHandler func(net.Conn)
 
-func NewServer(host string, port int) *Server {
+func NewServer(address string) *Server {
 	s := new(Server)
 
-	s.address = fmt.Sprintf("%s:%d", host, port)
+	s.address = address
 
 	return s
 }
 
-func (s *Server) Listen(handler ListenHandler) {
-	log.WithFields(log.Fields{
-		"address": s.address,
-	}).Debug("Listening")
+func (s *Server) String() string {
+	return s.address
+}
 
+func (s *Server) Listen(handler ListenHandler) {
 	listener, err := net.Listen("tcp", s.address)
 	if err != nil {
-		log.WithFields(log.Fields{
-			"error":   err,
-			"address": s.address,
-		}).Fatal("Failed to listen")
+		panic(err.Error())
 	}
 	defer listener.Close()
 
@@ -63,10 +57,6 @@ func (s *Server) Listen(handler ListenHandler) {
 
 	for {
 		conn, _ := listener.Accept()
-		log.WithFields(log.Fields{
-			"address": conn.RemoteAddr().String(),
-		}).Debug("New connection")
-
 		connections <- conn
 	}
 }

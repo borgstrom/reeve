@@ -33,7 +33,7 @@ tl;dr
 * etcd maintains state, runs on all the director nodes (only accessible by directors)
 * reeve-agent is what executes code on behalf of the directors, runs on all nodes
 * reeve is the client, used to interact with the servers, via the director
-* reeve-director handles the Raw Protocol and Command RPC on port 4195 and Control RPC on 4196.
+* reeve-director handles the Raw Protocol and Control RPC on port 4195 and Command RPC on 4196.
 
 Reeve director nodes have persistent connections between each other to create a full mesh.  This
 allows them to redirect and broadcast messages to each other.  When a director starts up it
@@ -117,34 +117,28 @@ the client has a signed certificate when it connects it can move directly to thi
 
 The server will then upgrade the connection to mutual auth TLS and RPC will be started.
 
-At the same time the client must open a connection to the Control RPC on port 4196.   This
+At the same time the client must open a connection to the Command RPC on port 4196.   This
 connection is TLS by default and there is no key exchange.
-
-### Command RPC
-
-The Command RPC implementation is served by agents to directors when they connect on the main port.
-It exposes all of the module functionality on that agent so that the director may invoke module
-functions.
 
 ### Control RPC
 
-The Control RPC implementation is served by directors to agents after they connect on the main port
-plus 1.  It exposes the master event bus and agent management functions to the agent.
+The Control RPC implementation is served by directors to agents, clients and other directors when
+they connect on the main port.  It exposes the master event bus, and management functions to the
+connecting party.
 
-### Director to Director
+For Agents it allows them to register as an agent and to publish events to the master event bus.
 
-When directors connect to each other they also use port 4195.  There is no automatic certificate
-exchange for directors (they have access to etcd, and can sign their own certs), and instead of
-issuing a command to start tls as an agent they announce they are a director and then upgrade to
-TLS.
+For Clients it allows them to send commands to agents and to stream events from the event bus.
 
-```
-<- protocol token
-<- protocol version
--> dir
--> tls
-<- ack
-```
+For Directors it allows them to send commands to agents, stream events from and publish events to
+the event bus.
+
+
+### Command RPC
+
+The Command RPC implementation is served by directors to agents after they connect on the main port
+plus 1. It exposes all of the module functionality on that agent so that the director may invoke
+module functions.
 
 
 /dev/urandom

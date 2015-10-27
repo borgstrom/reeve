@@ -29,6 +29,15 @@ type PEMWriter interface {
 	WritePEM(buf io.Writer) error
 }
 
+// IdentityType specifies the type of identity, which is used in determining KeyUsage constraints
+type IdentityType int
+
+const (
+	IdentityTypeDirector IdentityType = iota
+	IdentityTypeAgent
+	IdentityTypeClient
+)
+
 // Identity is used to tie a node (Id) to a Key & Certificate, also holding a Request if needed
 type Identity struct {
 	Id          string
@@ -48,7 +57,12 @@ func NewIdentity(id string) *Identity {
 
 // Returns the fingerprint (SHA1 byte array) of the certificate
 func (i *Identity) Fingerprint() [sha1.Size]byte {
-	return sha1.Sum(i.Certificate.Raw)
+	if i.IsSigned() {
+		return sha1.Sum(i.Certificate.Raw)
+	}
+	var output [sha1.Size]byte
+	copy(output[:], "Invalid certificate")
+	return output
 }
 
 // IsValid returns true if the Identity has a cert or csr
